@@ -41,6 +41,8 @@ jobs:
           DEVELOPER_DIR="$CALLTAP_XCODE" xcodebuild -version
       - name: Install XcodeGen
         run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Test IPA compatibility checks
+        run: python3 -m unittest discover -s Tests/PackageVerifier -p 'test_*.py' -v
       - name: Build and check packages
         run: bash Scripts/build-calltap.sh
       - name: Upload experimental packages
