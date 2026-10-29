@@ -99,4 +99,25 @@ do {
           "inspection count bound")
 }
 
-print("CallTapPolicy: all state-machine checks passed")
+do {
+    check(CallTapCallUI.recognizes(buttonLabels: ["더 보기", "소리 끔", "스피커", "키패드"]),
+          "captured iOS 27 Korean call controls work without a recognized end label")
+    check(CallTapCallUI.recognizes(buttonLabels: ["more options", " MUTE ", "Audio", "Keypad"]),
+          "English controls use the same normalized semantic families")
+    check(CallTapCallUI.recognizes(buttonLabels: ["통화 종료", "소리 끔"]),
+          "the existing end-call plus control route still works")
+    check(!CallTapCallUI.recognizes(buttonLabels: ["더 보기", "키패드"]),
+          "a generic More menu and keypad alone are not a call screen")
+    check(!CallTapCallUI.recognizes(buttonLabels: ["More", "Mute", "음소거", "Keypad"]),
+          "multiple mute aliases cannot replace the missing audio family")
+    check(!CallTapCallUI.recognizes(buttonLabels: ["More", "More Options", "Mute", "Speaker", "Keypad"]),
+          "an ambiguous More target cannot verify the fallback screen")
+    check(!CallTapCallUI.recognizes(buttonLabels: ["Mute", "Speaker", "Keypad"]),
+          "the fallback requires the actual More menu too")
+    check(!CallTapCallUI.recognizes(buttonLabels: ["Hang Up"]),
+          "an end-call label alone is insufficient")
+    check(!CallTapCallUI.recognizes(buttonLabels: ["More", "one", "two", "three"]),
+          "unknown buttons cannot replace known call controls")
+}
+
+print("CallTapPolicy: all state-machine and call-screen checks passed")

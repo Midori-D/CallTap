@@ -53,11 +53,9 @@ final class CallTapAutomation: NSObject, CXCallObserverDelegate, UNUserNotificat
     private static let recordingTexts = ["Recording", "Recording in Progress", "녹음 중", "통화 녹음 중"]
     private static let activeValues = normalizedSet(["1", "on", "selected", "recording", "녹음 중", "켜짐", "선택됨"])
     private static let inactiveValues = normalizedSet(["", "0", "off", "not selected", "꺼짐", "선택 안 됨"])
-    private static let endLabels = normalizedSet(["End Call", "Hang Up", "통화 종료", "전화 끊기"])
-    private static let callControlLabels = normalizedSet([
-        "Mute", "Keypad", "Speaker", "Audio", "음소거", "소리 끔", "키패드", "스피커", "오디오"
-    ])
-    private static let moreLabels = normalizedSet(["More", "More Options", "더 보기", "더보기"])
+    private static let endLabels = CallTapCallUI.endLabels
+    private static let callControlLabels = CallTapCallUI.controlLabels
+    private static let moreLabels = CallTapCallUI.moreLabels
     private static let diagnosticLabels = startLabels.union(stopLabels)
         .union(endLabels).union(callControlLabels).union(moreLabels)
 
@@ -221,12 +219,10 @@ final class CallTapAutomation: NSObject, CXCallObserverDelegate, UNUserNotificat
         case .notRecording:
             break
         }
-        let keys = Set(buttons.map(\.key))
-        let controlsVisible = !keys.isDisjoint(with: Self.endLabels)
-            && !keys.isDisjoint(with: Self.callControlLabels)
+        let controlsVisible = CallTapCallUI.recognizes(buttonLabels: buttons.map(\.label))
         if controlsVisible { verifiedCallUI.insert(id) }
         guard verifiedCallUI.contains(id) else {
-            waiting("통화 종료 및 통화 제어 버튼을 확인하지 못해 누르지 않습니다.")
+            waiting("기본 통화 화면의 제어 버튼 조합을 확인하지 못해 누르지 않습니다.")
             return
         }
 
@@ -262,7 +258,10 @@ final class CallTapAutomation: NSObject, CXCallObserverDelegate, UNUserNotificat
         if controlsVisible, !hasOpenedMore.contains(id), more.count == 1, let target = more.first {
             guard enabled, !LockStateMonitor.shared().isLocked,
                   allowedForegroundBundle() == bundleID,
-                  isSameSingleConnectedCall(id) else { return }
+                  isSameSingleConnectedCall(id),
+                  let freshButtons = readButtons(app),
+                  CallTapCallUI.recognizes(buttonLabels: freshButtons.map(\.label)),
+                  recordingState(app, buttons: freshButtons) == .notRecording else { return }
             let outcome = invokeExactButton(label: target.label, in: app,
                                             bundleID: bundleID, callID: id, isStart: false)
             switch outcome {
@@ -368,9 +367,7 @@ final class CallTapAutomation: NSObject, CXCallObserverDelegate, UNUserNotificat
     }
 
     private static func normalize(_ text: String) -> String {
-        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
-            .folding(options: [.caseInsensitive, .diacriticInsensitive],
-                     locale: Locale(identifier: "en_US_POSIX"))
+        CallTapCallUI.normalize(text)
     }
 
     private static func normalizedSet(_ values: [String]) -> Set<String> {

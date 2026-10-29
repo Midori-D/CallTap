@@ -4,6 +4,42 @@
 
 import Foundation
 
+/// Button evidence only; callers must also verify the native foreground app,
+/// one connected call, and an unlocked screen before using this result.
+enum CallTapCallUI {
+    static let endLabels = normalizedSet(["End Call", "Hang Up", "통화 종료", "전화 끊기"])
+    static let moreLabels = normalizedSet(["More", "More Options", "더 보기", "더보기"])
+    private static let controlFamilies = [
+        normalizedSet(["Mute", "음소거", "소리 끔"]),
+        normalizedSet(["Keypad", "키패드"]),
+        normalizedSet(["Speaker", "Audio", "스피커", "오디오"])
+    ]
+    static let controlLabels = controlFamilies.reduce(into: Set<String>()) { $0.formUnion($1) }
+
+    static func recognizes(buttonLabels: [String]) -> Bool {
+        let labels = buttonLabels.map(normalize)
+        let keys = Set(labels)
+        if !keys.isDisjoint(with: endLabels), !keys.isDisjoint(with: controlLabels) {
+            return true
+        }
+        // iPhone 14 Pro / iOS 27.0 exposes mute, keypad, audio, and More while
+        // its end-call button does not match our known accessibility aliases.
+        // Require every semantic family; translated synonyms are not extra proof.
+        return controlFamilies.allSatisfy { !keys.isDisjoint(with: $0) }
+            && labels.filter { moreLabels.contains($0) }.count == 1
+    }
+
+    static func normalize(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            .folding(options: [.caseInsensitive, .diacriticInsensitive],
+                     locale: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private static func normalizedSet(_ values: [String]) -> Set<String> {
+        Set(values.map(normalize))
+    }
+}
+
 struct CallTapCallState {
     let id: UUID
     let hasConnected: Bool
