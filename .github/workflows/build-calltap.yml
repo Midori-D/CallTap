@@ -1,0 +1,54 @@
+name: Build CallTap experimental IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select an installed Xcode with iPhoneOS SDK 27 or newer
+        shell: bash
+        run: |
+          set -euo pipefail
+          CALLTAP_XCODE="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          candidates = []
+          for path in glob.glob('/Applications/Xcode*.app/Contents/Developer'):
+              env = dict(os.environ, DEVELOPER_DIR=path)
+              try:
+                  sdk = subprocess.check_output(
+                      ['xcrun', '--sdk', 'iphoneos', '--show-sdk-version'],
+                      env=env, text=True, stderr=subprocess.DEVNULL).strip()
+                  version = tuple(map(int, re.findall(r'\d+', sdk)))
+                  if version and version[0] >= 27:
+                      candidates.append((version, path))
+              except subprocess.CalledProcessError:
+                  pass
+          if not candidates:
+              raise SystemExit('No Xcode with iPhoneOS SDK 27+ is installed on this runner.')
+          print(max(candidates)[1])
+          PY
+          )"
+          echo "DEVELOPER_DIR=$CALLTAP_XCODE" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$CALLTAP_XCODE" xcodebuild -version
+      - name: Install XcodeGen
+        run: brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+      - name: Build and check packages
+        run: bash Scripts/build-calltap.sh
+      - name: Upload experimental packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: CallTap-iOS27-experimental
+          path: |
+            release/CallTap-Runner-unsigned.ipa
+            release/CallTap-Helper-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
