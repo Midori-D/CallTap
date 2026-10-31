@@ -67,7 +67,7 @@ struct CallTapMainView: View {
                 }
             }
         }
-        .navigationTitle("AirRecord 1.1.3")
+        .navigationTitle("AirRecord 1.1.4")
         .sheet(isPresented: $showMount) { DDIMountView() }
         .task { await monitor.resumeIfEnabled() }
         .onChange(of: scenePhase) { _, phase in

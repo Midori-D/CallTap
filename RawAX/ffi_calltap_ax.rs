@@ -7,7 +7,8 @@ use idevice::IdeviceError;
 /// 1 reserve More, 2 reserve recording start. Called on the invoking worker.
 pub type CallTapAXGuard = Option<unsafe extern "C" fn(*mut c_void,u32)->bool>;
 
-/// Inspects native call UI and performs at most one reserved native AX press.
+/// Inspects native call UI; may open More once and then submit recording start
+/// once in the same connection after bounded menu-stabilization reads.
 /// Caller owns adapter/handshake, must keep them on their original thread, and
 /// must not reuse either until this bounded call returns. No XCTest is started.
 ///
@@ -25,7 +26,7 @@ pub unsafe extern "C" fn calltap_ax_inspect(
     let guard=callback.unwrap();let context=context as usize;
     let result=run_sync_local(async move {
         let operation=idevice::dvt::calltap_ax::inspect(unsafe{&mut (*adapter).0},unsafe{&mut (*handshake).0},may_open_more,move|action|unsafe{guard(context as *mut c_void,action)});
-        tokio::time::timeout(Duration::from_secs(15),operation).await.map_err(|_|IdeviceError::UnexpectedResponse("CallTap AX: inspection timed out; a reserved action must not be replayed".into()))?
+        tokio::time::timeout(Duration::from_secs(22),operation).await.map_err(|_|IdeviceError::UnexpectedResponse("CallTap AX: inspection timed out; a reserved action must not be replayed".into()))?
     });
     match result {Ok(value)=>{unsafe{*outcome=value;}null_mut()},Err(error)=>ffi_err!(error)}
 }

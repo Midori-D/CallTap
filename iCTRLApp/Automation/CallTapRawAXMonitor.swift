@@ -101,6 +101,9 @@ private final class CallTapRawAXGate: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard permitsLocked(inspection), !moreReservations.contains(inspection.callID) else { return false }
+        guard let deadline = policy.reserveMenuWindow(for: inspection.callID, calls: calls,
+                                                       now: ProcessInfo.processInfo.systemUptime) else { return false }
+        deadlines[inspection.callID] = deadline
         // Reservation remains spent even if the subsequent request is ambiguous.
         moreReservations.insert(inspection.callID)
         return true
@@ -415,16 +418,22 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         case .success(.openedMore):
             setStatus("더 보기를 열었습니다. 보이는 통화 녹음 항목을 확인합니다.")
         case .success(.startSubmitted):
-            setStatus("녹음 시작 요청을 한 번 보냈습니다. 통화 화면의 녹음 타이머를 확인하세요.")
+            setStatus("녹음 요청은 전달됐지만 시작 표식을 자동 확인하지 못했습니다. 실제 타이머를 확인하세요. 이번 통화에는 다시 누르지 않습니다.")
         case .success(.alreadyRecording):
             gate.markAlreadyRecording(inspection)
             setStatus("이미 녹음 중이어서 자동 시작을 건너뛰었습니다.")
-        case .failure:
+        case .success(.recordingConfirmed):
+            gate.markAlreadyRecording(inspection)
+            setStatus("기본 전화 화면에서 녹음 중 상태를 확인했습니다.")
+        case .failure(let error):
             // Never emit native exception text: it can contain private UI text.
             if gate.startWasReserved(inspection) {
                 setStatus("녹음 시작 요청의 결과를 확인하지 못했습니다. 이번 통화에는 다시 누르지 않습니다.")
             } else {
                 setStatus("통화 화면 검사에 실패했습니다. 준비 시간 안에서 다시 확인합니다.")
+            }
+            if let detail = CallTapRawAXClient.diagnostic(for: error) {
+                recordEvent("접근성 검사: \(detail)")
             }
         }
     }
@@ -432,6 +441,10 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     private func setStatus(_ value: String) {
         guard status != value else { return }
         status = value
+        recordEvent(value)
+    }
+
+    private func recordEvent(_ value: String) {
         let time = Date().formatted(date: .omitted, time: .standard)
         recentEvents.append("[\(time)] \(value)")
         if recentEvents.count > 12 { recentEvents.removeFirst(recentEvents.count - 12) }

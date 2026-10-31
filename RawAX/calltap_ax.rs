@@ -247,10 +247,9 @@ impl HitEvidence {
 fn unavailable_hit(error:&IdeviceError)->bool {
     matches!(error,IdeviceError::UnexpectedResponse(message) if message=="CallTap AX: hit-test unavailable (8)")
 }
+#[cfg(test)]
 fn unique(nodes:&[Node],predicate:fn(&str)->bool)->Result<Option<Node>,IdeviceError> {
-    let mut candidates=HashMap::new();
-    for n in nodes.iter().filter(|n|n.visible&&predicate(&n.label)) {candidates.insert(key(&n.token)?,n.clone());}
-    Ok(if candidates.len()==1 {candidates.into_values().next()}else{None})
+    Ok(match candidate(nodes,predicate)? {Candidate::One(node)=>Some(node),_=>None})
 }
 fn call_controls(nodes:&[Node])->bool {
     let names:HashSet<_>=nodes.iter().filter(|n|n.visible).map(|n|norm(&n.label)).collect();
@@ -268,52 +267,209 @@ async fn call_pid(provider:&mut impl RsdProvider,hs:&mut RsdHandshake)->Result<u
     Err(err("native call app is not running"))
 }
 
-// Outcome: 0 waiting, 1 More submitted, 2 start submitted, 3 already recording.
-// guard(0) checks current call/lock/generation; guard(1/2) atomically reserves
-// the one allowed action BEFORE the request is dispatched. Never auto-replay.
+// Fixed, non-sensitive wait diagnostics. 100 + code means More was accepted
+// in this connection, but its bounded follow-up ended with that wait reason.
+const WAIT_MISSING: u32 = 10;
+const WAIT_AMBIGUOUS: u32 = 11;
+const WAIT_IDENTITY: u32 = 12;
+const WAIT_DISABLED: u32 = 13;
+const WAIT_FRAME: u32 = 14;
+const WAIT_HIT: u32 = 15;
+const WAIT_VALUE: u32 = 16;
+const WAIT_GATE: u32 = 17;
+const WAIT_ROOT: u32 = 18;
+
+enum Candidate { Missing, Ambiguous, One(Node) }
+fn candidate(nodes:&[Node],predicate:fn(&str)->bool)->Result<Candidate,IdeviceError> {
+    let mut candidates=HashMap::new();
+    for node in nodes.iter().filter(|node|node.visible&&predicate(&node.label)) {
+        candidates.insert(key(&node.token)?,node.clone());
+    }
+    Ok(match candidates.len() {
+        0=>Candidate::Missing,
+        1=>Candidate::One(candidates.into_values().next().unwrap()),
+        _=>Candidate::Ambiguous,
+    })
+}
+
+enum InspectionStep { Waiting(u32), MoreSubmitted, StartSubmitted, AlreadyRecording }
+
+async fn inspect_step(ax:&mut Ax,pid:u64,root:&Token,may_open_more:bool,
+                      guard:&impl Fn(u32)->bool,start_reserved:&mut bool)->Result<InspectionStep,IdeviceError> {
+    if !guard(0){return Ok(InspectionStep::Waiting(WAIT_GATE));}
+    let snapshot=ax.snapshot(root).await?;let initial=nodes(&snapshot,root)?;
+    if recording(&initial){return Ok(InspectionStep::AlreadyRecording);}
+    let (target,is_start)=match candidate(&initial,start)? {
+        Candidate::One(target)=>(target,true),
+        Candidate::Ambiguous=>return Ok(InspectionStep::Waiting(WAIT_AMBIGUOUS)),
+        Candidate::Missing=>{
+            if !may_open_more||!call_controls(&initial){return Ok(InspectionStep::Waiting(WAIT_MISSING));}
+            match candidate(&initial,more)? {
+                Candidate::One(target)=>(target,false),
+                Candidate::Missing=>return Ok(InspectionStep::Waiting(WAIT_MISSING)),
+                Candidate::Ambiguous=>return Ok(InspectionStep::Waiting(WAIT_AMBIGUOUS)),
+            }
+        }
+    };
+    // A menu item can already be in AX while its UIKit transition is still
+    // running. Require observations separated in time, even when the caller
+    // starts with an already-open menu from an earlier inspection.
+    if is_start {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        if !guard(0){return Ok(InspectionStep::Waiting(WAIT_GATE));}
+    }
+    let fresh=ax.snapshot(root).await?;let current=nodes(&fresh,root)?;
+    if recording(&current){return Ok(InspectionStep::AlreadyRecording);}
+    let confirmed=match candidate(&current,if is_start {start}else{more})? {
+        Candidate::One(node)=>node,
+        Candidate::Missing=>return Ok(InspectionStep::Waiting(WAIT_MISSING)),
+        Candidate::Ambiguous=>return Ok(InspectionStep::Waiting(WAIT_AMBIGUOUS)),
+    };
+    if key(&confirmed.token)?!=key(&target.token)? {return Ok(InspectionStep::Waiting(WAIT_IDENTITY));}
+    if is_start {
+        let (Some(before),Some(after))=(target.frame,confirmed.frame) else {return Ok(InspectionStep::Waiting(WAIT_FRAME));};
+        if !before.same(after){return Ok(InspectionStep::Waiting(WAIT_FRAME));}
+    }
+    let state=ax.read(5,Some(map(vec![("attributes",Value::Array([21u64,27,30,32,53].into_iter().map(|n|Value::Integer(n.into())).collect()))])),Some(&confirmed.token),0).await?;
+    let live=dict(&state)?;
+    if !yes(live.get("27"))||!yes(live.get("32")) {return Ok(InspectionStep::Waiting(WAIT_DISABLED));}
+    if is_start && (yes(live.get("30"))||active(live.get("53"))) {return Ok(InspectionStep::AlreadyRecording);}
+    if is_start && !inactive(live.get("53")) {return Ok(InspectionStep::Waiting(WAIT_VALUE));}
+    let Some(frame)=confirmed.frame else {return Ok(InspectionStep::Waiting(WAIT_FRAME));};
+    let Some(live_frame)=live.get("21").and_then(Rect::parse) else {return Ok(InspectionStep::Waiting(WAIT_FRAME));};
+    if !frame.same(live_frame){return Ok(InspectionStep::Waiting(WAIT_FRAME));}
+    let hit=match ax.hit(frame.center()).await {
+        Ok(token)=>if key(&token)?==key(&confirmed.token)? {HitEvidence::SameElement}else{HitEvidence::DifferentElement},
+        Err(error) if unavailable_hit(&error)=>HitEvidence::Unavailable8,
+        Err(error)=>return Err(error),
+    };
+    if !hit.permits(confirmed.traits){return Ok(InspectionStep::Waiting(WAIT_HIT));}
+    // No selector, visibility, frame, hit, proximity or current-call guard is
+    // relaxed while waiting for the menu animation to settle.
+    let latest=ax.read(1,Some(map(vec![("pid",Value::Integer(pid.into()))])),None,0).await?;
+    if key(&latest)?!=key(root)? {return Ok(InspectionStep::Waiting(WAIT_ROOT));}
+    if !guard(0){return Ok(InspectionStep::Waiting(WAIT_GATE));}
+    let action=if is_start {2}else{1};
+    if !guard(action){return Ok(InspectionStep::Waiting(WAIT_GATE));}
+    if is_start { *start_reserved=true; }
+    let accepted=ax.read(7,None,Some(&confirmed.token),5).await?;
+    if !yes(Some(&accepted)){return Err(err("native press refused; action remains spent"));}
+    Ok(if is_start {InspectionStep::StartSubmitted}else{InspectionStep::MoreSubmitted})
+}
+
+// This driver is shared with the fake-session regression tests. It owns the
+// only transition which permits a More request, and never repeats a submitted
+// recording action, even if its result is an error or times out.
+trait MenuSession {
+    fn permits(&self)->bool;
+    fn start_reserved(&self)->bool;
+    async fn step(&mut self,may_open_more:bool)->Result<InspectionStep,IdeviceError>;
+    async fn observe_recording(&mut self)->Result<bool,IdeviceError>;
+}
+struct MenuTiming {
+    interval:Duration, window:Duration, maximum_polls:usize, minimum_settle:Duration,
+    confirmation_window:Duration, confirmation_interval:Duration, maximum_confirmations:usize,
+}
+impl Default for MenuTiming {
+    fn default()->Self {
+        Self{interval:Duration::from_millis(150),window:Duration::from_secs(5),maximum_polls:12,
+             minimum_settle:Duration::from_secs(1),confirmation_window:Duration::from_secs(3),
+             confirmation_interval:Duration::from_millis(150),maximum_confirmations:12}
+    }
+}
+async fn confirm_submission(session:&mut impl MenuSession,timing:&MenuTiming)->u32 {
+    let deadline=tokio::time::Instant::now()+timing.confirmation_window;
+    for _ in 0..timing.maximum_confirmations {
+        if !session.permits()||tokio::time::Instant::now()>=deadline {break;}
+        let observed=tokio::time::timeout_at(deadline,session.observe_recording()).await;
+        match observed {
+            Ok(Ok(true))=>return 4,
+            Ok(Ok(false))=>{},
+            // A missing response cannot justify retransmitting a toggle.
+            Ok(Err(_))|Err(_)=>break,
+        }
+        let remaining=deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero(){break;}
+        tokio::time::sleep(timing.confirmation_interval.min(remaining)).await;
+    }
+    2 // Native ACK only; actual recording was not observed. Never retry.
+}
+async fn drive_menu(session:&mut impl MenuSession,may_open_more:bool,timing:MenuTiming)->Result<u32,IdeviceError> {
+    let mut deadline=None;
+    let mut polls=0;
+    let mut last_wait=WAIT_MISSING;
+    loop {
+        let opened_more=deadline.is_some();
+        if !session.permits(){return Ok(if opened_more {100+WAIT_GATE}else{WAIT_GATE});}
+        let step=if let Some(end)=deadline {
+            if polls>=timing.maximum_polls||tokio::time::Instant::now()>=end {return Ok(100+last_wait);}
+            polls+=1;
+            let result=tokio::time::timeout_at(end,session.step(false)).await;
+            match result {
+                Ok(result)=>result?,
+                Err(_)=>{
+                    if session.start_reserved(){return Err(err("menu follow-up timed out; reserved start must not be replayed"));}
+                    return Ok(100+last_wait);
+                }
+            }
+        } else {
+            session.step(may_open_more).await?
+        };
+        match step {
+            InspectionStep::StartSubmitted=>return Ok(confirm_submission(session,&timing).await),
+            InspectionStep::AlreadyRecording=>return Ok(3),
+            InspectionStep::Waiting(reason)=>{
+                last_wait=reason;
+                if !opened_more {return Ok(reason);}
+                if reason==WAIT_GATE||reason==WAIT_ROOT {return Ok(100+reason);}
+            }
+            InspectionStep::MoreSubmitted=>{
+                if opened_more {return Err(err("duplicate More outcome; action must not be replayed"));}
+                deadline=Some(tokio::time::Instant::now()+timing.window);
+                // AX acceptance precedes the menu's visual/interaction-ready
+                // state. Do not immediately activate the newly exposed item.
+                tokio::time::sleep(timing.minimum_settle.min(timing.window)).await;
+            }
+        }
+        if let Some(end)=deadline {
+            if polls>=timing.maximum_polls||tokio::time::Instant::now()>=end {return Ok(100+last_wait);}
+            tokio::time::sleep(timing.interval.min(end.saturating_duration_since(tokio::time::Instant::now()))).await;
+        }
+    }
+}
+
+struct NativeMenuSession<'a,G:Fn(u32)->bool> {
+    ax:&'a mut Ax, pid:u64, root:Token, guard:&'a G, start_reserved:bool,
+}
+impl<G:Fn(u32)->bool> MenuSession for NativeMenuSession<'_,G> {
+    fn permits(&self)->bool {(self.guard)(0)}
+    fn start_reserved(&self)->bool {self.start_reserved}
+    async fn step(&mut self,may_open_more:bool)->Result<InspectionStep,IdeviceError> {
+        inspect_step(self.ax,self.pid,&self.root,may_open_more,self.guard,&mut self.start_reserved).await
+    }
+    async fn observe_recording(&mut self)->Result<bool,IdeviceError> {
+        if !(self.guard)(0){return Ok(false);}
+        let latest=self.ax.read(1,Some(map(vec![("pid",Value::Integer(self.pid.into()))])),None,0).await?;
+        if key(&latest)?!=key(&self.root)? {return Err(err("recording confirmation root changed"));}
+        let snapshot=self.ax.snapshot(&self.root).await?;
+        let current=nodes(&snapshot,&self.root)?;
+        Ok((self.guard)(0)&&recording(&current))
+    }
+}
+
+// Outcomes: 2 start ACKed but unconfirmed, 3 already recording, 4 observed
+// recording after our single start, 10..18 fixed wait reason,
+// 110..118 More accepted followed by bounded waiting. guard(1/2) reserves each
+// action BEFORE wire dispatch. An ambiguous start is never replayed.
 pub async fn inspect(provider:&mut impl RsdProvider,hs:&mut RsdHandshake,may_open_more:bool,guard:impl Fn(u32)->bool)->Result<u32,IdeviceError> {
-    if !guard(0){return Ok(0);}
+    if !guard(0){return Ok(WAIT_GATE);}
     let pid=call_pid(provider,hs).await?;
     let mut ax=Ax::connect(provider,hs).await?;
     let result=async {
         let root=ax.read(1,Some(map(vec![("pid",Value::Integer(pid.into()))])),None,0).await?;
-        if key(&root)?.0!=pid {return Err(err("native app identity changed"));}
-        let snapshot=ax.snapshot(&root).await?;let initial=nodes(&snapshot,&root)?;
-        if recording(&initial){return Ok(3);}
-        let start_target=unique(&initial,start)?;
-        let (target,is_start)=if let Some(target)=start_target {(target,true)} else {
-            if !may_open_more||!call_controls(&initial){return Ok(0);}
-            let Some(target)=unique(&initial,more)? else {return Ok(0);};(target,false)
-        };
-        let fresh=ax.snapshot(&root).await?;let current=nodes(&fresh,&root)?;
-        if recording(&current){return Ok(3);}
-        let Some(confirmed)=unique(&current,if is_start {start}else{more})? else {return Ok(0);};
-        if key(&confirmed.token)?!=key(&target.token)? {return Ok(0);}
-        let state=ax.read(5,Some(map(vec![("attributes",Value::Array([21u64,27,30,32,53].into_iter().map(|n|Value::Integer(n.into())).collect()))])),Some(&confirmed.token),0).await?;
-        let live=dict(&state)?;
-        if !yes(live.get("27"))||!yes(live.get("32")) {return Ok(0);}
-        if is_start && (yes(live.get("30"))||active(live.get("53"))) {return Ok(3);}
-        if is_start && !inactive(live.get("53")) {return Ok(0);}
-        let frame=confirmed.frame.ok_or_else(||err("target frame unavailable"))?;
-        let live_frame=live.get("21").and_then(Rect::parse).ok_or_else(||err("live target frame unavailable"))?;
-        if !frame.same(live_frame){return Ok(0);}
-        let hit=match ax.hit(frame.center()).await {
-            Ok(token)=>if key(&token)?==key(&confirmed.token)? {HitEvidence::SameElement}else{HitEvidence::DifferentElement},
-            Err(error) if unavailable_hit(&error)=>HitEvidence::Unavailable8,
-            Err(error)=>return Err(error),
-        };
-        if !hit.permits(confirmed.traits){return Ok(0);}
-        // Even the error-8 path still requires the same unique native button
-        // in two snapshots, matching live frame, enabled/visible/inactive state,
-        // and the unlocked single-call/generation gate immediately before press.
-        // No coordinate is ever sent as an input event.
-        let latest=ax.read(1,Some(map(vec![("pid",Value::Integer(pid.into()))])),None,0).await?;
-        if key(&latest)?!=key(&root)?||!guard(0){return Ok(0);}
-        let action=if is_start {2}else{1};
-        if !guard(action){return Ok(0);}
-        let accepted=ax.read(7,None,Some(&confirmed.token),5).await?;
-        if !yes(Some(&accepted)){return Err(err("native press refused; action remains spent"));}
-        Ok(action)
+        if key(&root)?.0!=pid {return Ok(WAIT_ROOT);}
+        let mut session=NativeMenuSession{ax:&mut ax,pid,root,guard:&guard,start_reserved:false};
+        drive_menu(&mut session,may_open_more,MenuTiming::default()).await
     }.await;
     ax.close().await;result
 }
@@ -340,4 +496,134 @@ mod tests {
     #[test] fn independent_press_request_matches(){let expected=decode(include_bytes!("calltap_ax_fixtures/press-request.bplist")).unwrap();let actual=decode(&request(7,None,Some(&reference_token()),5).unwrap()).unwrap();assert_eq!(actual,expected);}
     #[test] fn independent_hit_point_matches(){let expected=decode(include_bytes!("calltap_ax_fixtures/hit-request.bplist")).unwrap();let params=map(vec![("point",Value::Array(vec![Value::Real(123.5),Value::Real(67.25)]))]);let actual=decode(&request(6,Some(params),None,0).unwrap()).unwrap();assert_eq!(field(&actual,"parameters").unwrap(),field(&expected,"parameters").unwrap());}
     #[test] fn malformed_archive_is_rejected(){assert!(decode(b"not an archive").is_err());}
+
+    enum Planned { More, Wait(u32), Start, Already, AmbiguousStart }
+    struct FakeMenuSession {
+        plan:std::collections::VecDeque<Planned>, allowed_more:Vec<bool>,
+        more_presses:usize, start_presses:usize, reserved:bool,
+        revoke_after:Option<usize>, observations:std::collections::VecDeque<bool>,
+        confirmation_reads:usize, more_at:Option<tokio::time::Instant>,start_at:Option<tokio::time::Instant>,
+    }
+    impl FakeMenuSession {
+        fn new(plan:Vec<Planned>)->Self {
+            Self{plan:plan.into(),allowed_more:vec![],more_presses:0,start_presses:0,reserved:false,
+                 revoke_after:None,observations:std::collections::VecDeque::new(),confirmation_reads:0,more_at:None,start_at:None}
+        }
+    }
+    impl MenuSession for FakeMenuSession {
+        fn permits(&self)->bool {self.revoke_after.map_or(true,|count|self.allowed_more.len()<count)}
+        fn start_reserved(&self)->bool {self.reserved}
+        async fn step(&mut self,may_open_more:bool)->Result<InspectionStep,IdeviceError> {
+            self.allowed_more.push(may_open_more);
+            match self.plan.pop_front().unwrap_or(Planned::Wait(WAIT_MISSING)) {
+                Planned::More if may_open_more=>{
+                    self.more_presses+=1;self.more_at=Some(tokio::time::Instant::now());Ok(InspectionStep::MoreSubmitted)
+                },
+                Planned::More=>Ok(InspectionStep::Waiting(WAIT_MISSING)),
+                Planned::Wait(reason)=>Ok(InspectionStep::Waiting(reason)),
+                Planned::Already=>Ok(InspectionStep::AlreadyRecording),
+                Planned::Start=>{
+                    assert!(!self.reserved,"driver replayed a reserved recording start");
+                    self.reserved=true;self.start_presses+=1;self.start_at=Some(tokio::time::Instant::now());Ok(InspectionStep::StartSubmitted)
+                }
+                Planned::AmbiguousStart=>{
+                    assert!(!self.reserved,"driver replayed a reserved recording start");
+                    self.reserved=true;self.start_presses+=1;Err(err("test start reply lost"))
+                }
+            }
+        }
+        async fn observe_recording(&mut self)->Result<bool,IdeviceError> {
+            self.confirmation_reads+=1;
+            Ok(self.observations.pop_front().unwrap_or(false))
+        }
+    }
+    fn fast_menu_timing(polls:usize)->MenuTiming {
+        MenuTiming{interval:Duration::ZERO,window:Duration::from_secs(1),maximum_polls:polls,
+                   minimum_settle:Duration::ZERO,confirmation_window:Duration::from_secs(1),
+                   confirmation_interval:Duration::ZERO,maximum_confirmations:3}
+    }
+    #[tokio::test]
+    async fn delayed_menu_reaches_record_without_reopening_more() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Wait(WAIT_MISSING),Planned::Wait(WAIT_FRAME),Planned::Start]);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),2);
+        assert_eq!(session.allowed_more,vec![true,false,false,false]);
+        assert_eq!((session.more_presses,session.start_presses),(1,1));
+    }
+    #[tokio::test]
+    async fn still_visible_more_control_does_not_get_pressed_again() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::More,Planned::Start]);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),2);
+        assert_eq!((session.more_presses,session.start_presses),(1,1));
+        assert_eq!(session.allowed_more,vec![true,false,false]);
+    }
+    #[tokio::test]
+    async fn recording_started_manually_while_menu_settles_is_not_toggled() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Wait(WAIT_DISABLED),Planned::Already,Planned::Start]);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),3);
+        assert_eq!((session.more_presses,session.start_presses),(1,0));
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn initially_active_recording_sends_no_action() {
+        let mut session=FakeMenuSession::new(vec![Planned::Already,Planned::More]);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),3);
+        assert_eq!((session.more_presses,session.start_presses),(0,0));
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn ended_or_paused_call_revokes_followup_before_record_press() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Start]);
+        session.revoke_after=Some(1);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),100+WAIT_GATE);
+        assert_eq!((session.more_presses,session.start_presses),(1,0));
+    }
+    #[tokio::test]
+    async fn menu_poll_budget_reports_last_reason_without_extra_press() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Wait(WAIT_FRAME),Planned::Wait(WAIT_DISABLED),Planned::Start]);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(2)).await.unwrap(),100+WAIT_DISABLED);
+        assert_eq!(session.allowed_more.len(),3);
+        assert_eq!((session.more_presses,session.start_presses),(1,0));
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn ambiguous_record_reply_is_never_retried() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::AmbiguousStart,Planned::Start]);
+        assert!(drive_menu(&mut session,true,fast_menu_timing(5)).await.is_err());
+        assert_eq!((session.more_presses,session.start_presses),(1,1));
+        assert!(session.reserved);
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn previously_reserved_more_cannot_be_reopened_by_a_later_inspection() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Start]);
+        assert_eq!(drive_menu(&mut session,false,fast_menu_timing(5)).await.unwrap(),WAIT_MISSING);
+        assert_eq!((session.more_presses,session.start_presses),(0,0));
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn native_start_ack_without_recording_effect_stays_unconfirmed() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Start,Planned::Start]);
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),2);
+        assert_eq!(session.confirmation_reads,3);
+        assert_eq!((session.more_presses,session.start_presses),(1,1));
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn delayed_recording_effect_is_confirmed_without_another_press() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Start,Planned::Start]);
+        session.observations=vec![false,false,true].into();
+        assert_eq!(drive_menu(&mut session,true,fast_menu_timing(5)).await.unwrap(),4);
+        assert_eq!(session.confirmation_reads,3);
+        assert_eq!((session.more_presses,session.start_presses),(1,1));
+        assert_eq!(session.plan.len(),1);
+    }
+    #[tokio::test]
+    async fn more_menu_has_a_minimum_settling_dwell_before_record_press() {
+        let mut session=FakeMenuSession::new(vec![Planned::More,Planned::Start]);
+        let mut timing=fast_menu_timing(5);
+        timing.minimum_settle=Duration::from_millis(30);
+        assert_eq!(drive_menu(&mut session,true,timing).await.unwrap(),2);
+        assert!(session.start_at.unwrap().duration_since(session.more_at.unwrap())>=Duration::from_millis(30));
+        assert_eq!((session.more_presses,session.start_presses),(1,1));
+    }
 }

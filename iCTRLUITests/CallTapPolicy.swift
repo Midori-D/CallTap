@@ -71,6 +71,7 @@ struct CallTapPolicy {
     private var isEnabled = false
     private(set) var reservedStarts: Set<UUID> = []
     private(set) var completedCalls: Set<UUID> = []
+    private var menuWindows: Set<UUID> = []
 
     init(retryWindow: TimeInterval = 20, maximumInspections: Int = 24) {
         self.retryWindow = max(0, retryWindow)
@@ -86,6 +87,7 @@ struct CallTapPolicy {
         windows = windows.filter { ids.contains($0.key) }
         reservedStarts.formIntersection(ids)
         completedCalls.formIntersection(ids)
+        menuWindows.formIntersection(ids)
         isEnabled = enabled
         guard enabled else { return .paused }
         guard !active.isEmpty else { return .noCall }
@@ -106,6 +108,22 @@ struct CallTapPolicy {
         window.inspections += 1
         windows[call.id] = window
         return .inspect(call.id)
+    }
+
+    /// Give an already-validated More request one bounded menu-readiness phase.
+    /// Repeated requests or rearming cannot extend this same call again.
+    mutating func reserveMenuWindow(for id: UUID, calls: [CallTapCallState],
+                                    now: TimeInterval) -> TimeInterval? {
+        let active = calls.filter { !$0.hasEnded }
+        guard isEnabled, active.count == 1, let call = active.first, call.id == id,
+              call.hasConnected, !call.isOnHold, now.isFinite,
+              !reservedStarts.contains(id), !completedCalls.contains(id), !menuWindows.contains(id),
+              var window = windows[id], now <= window.deadline else { return nil }
+        menuWindows.insert(id)
+        window.deadline = max(window.deadline, now + 8)
+        window.inspections = 0
+        windows[id] = window
+        return window.deadline
     }
 
     /// Reserve BEFORE invoking XCTest. A thrown/ambiguous tap is still spent:

@@ -9,6 +9,7 @@ enum CallTapRawAXOutcome {
     case openedMore
     case startSubmitted
     case alreadyRecording
+    case recordingConfirmed
 }
 private struct CallTapRawAXError: LocalizedError {
     let message: String
@@ -80,8 +81,30 @@ enum CallTapRawAXClient {
         case 1: return .openedMore
         case 2: return .startSubmitted
         case 3: return .alreadyRecording
+        case 4: return .recordingConfirmed
+        case 10...18, 110...118:
+            let afterMore = outcome >= 100
+            let reason = afterMore ? outcome - 100 : outcome
+            let detail: String
+            switch reason {
+            case 10: detail = "통화 녹음 항목이 나타나기를 기다립니다."
+            case 11: detail = "보이는 후보가 여러 개여서 누르지 않았습니다."
+            case 12: detail = "버튼이 전환 중이어서 다시 확인합니다."
+            case 13: detail = "버튼이 활성화되어 보이기를 기다립니다."
+            case 14: detail = "메뉴 위치가 안정되기를 기다립니다."
+            case 15: detail = "버튼 위치 확인이 일치하지 않아 누르지 않았습니다."
+            case 16: detail = "녹음 상태를 확정할 수 없어 누르지 않았습니다."
+            case 17: detail = "현재 통화·잠금·준비 시간을 다시 확인합니다."
+            default: detail = "기본 통화 화면이 바뀌어 다시 확인합니다."
+            }
+            return .waiting((afterMore ? "더 보기 이후: " : "") + detail)
         default: throw CallTapRawAXError(message: "알 수 없는 접근성 검사 결과입니다.")
         }
+    }
+
+    static func diagnostic(for error: Error) -> String? {
+        // This type is created only from fixed local labels or our Rust errors.
+        (error as? CallTapRawAXError)?.message
     }
     private static func check(_ operation: String,
                               _ call: () -> UnsafeMutablePointer<IdeviceFfiError>?) throws {

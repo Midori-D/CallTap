@@ -17,7 +17,7 @@ def verify(path):
         info = plistlib.loads(archive.read(prefix + 'Info.plist'))
         if info.get('CFBundleIdentifier') != 'com.calltap.prototype.ictrl':
             raise ValueError('Unexpected app identifier.')
-        if info.get('CFBundleShortVersionString') != '1.1.3' or str(info.get('CFBundleVersion')) != '7':
+        if info.get('CFBundleShortVersionString') != '1.1.4' or str(info.get('CFBundleVersion')) != '8':
             raise ValueError('Unexpected AX app version.')
         if info.get('CFBundleDisplayName') != 'AirRecord':
             raise ValueError('Unexpected app display name.')
@@ -63,7 +63,7 @@ def verify(path):
             count += 1
         if not count or prefix+info['CFBundleExecutable'] not in names:
             raise ValueError('Main executable missing.')
-        print(f'PASS: AirRecord 1.1.3 (7), AppIcon, Shortcut metadata, {count} signed arm64 binary(s), no direct connector/XCTest/profile.')
+        print(f'PASS: AirRecord 1.1.4 (8), AppIcon, Shortcut metadata, {count} signed arm64 binary(s), no direct connector/XCTest/profile.')
 
 if __name__ == '__main__':
     verify(sys.argv[1])

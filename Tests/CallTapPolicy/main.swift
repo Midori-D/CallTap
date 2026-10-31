@@ -120,4 +120,43 @@ do {
           "unknown buttons cannot replace known call controls")
 }
 
-print("CallTapPolicy: all state-machine and call-screen checks passed")
+do {
+    var policy = CallTapPolicy()
+    _ = policy.decision(calls: [call()], enabled: true, now: 0)
+    check(policy.reserveMenuWindow(for: firstID, calls: [call()], now: 19.5) == 27.5,
+          "a late More request receives eight seconds for menu readiness and confirmation")
+    check(policy.reserveMenuWindow(for: firstID, calls: [call()], now: 21) == nil,
+          "the same menu cannot repeatedly extend its deadline")
+    check(policy.decision(calls: [call()], enabled: true, now: 22) == .inspect(firstID),
+          "record inspection survives the old twenty-second boundary")
+    check(policy.reserveStart(for: firstID, calls: [call()]), "start can be reserved in menu phase")
+    policy.resume()
+    check(policy.reserveMenuWindow(for: firstID, calls: [call()], now: 23) == nil,
+          "rearm cannot reopen the window of a submitted recording start")
+    check(policy.decision(calls: [call()], enabled: true, now: 23) == .handled(firstID),
+          "rearm never submits a second recording start")
+}
+
+do {
+    var policy = CallTapPolicy()
+    _ = policy.decision(calls: [call()], enabled: true, now: 0)
+    check(policy.reserveMenuWindow(for: firstID, calls: [call(held: true)], now: 1) == nil,
+          "held calls cannot reserve a menu phase")
+    check(policy.reserveMenuWindow(for: firstID, calls: [call(), call(secondID)], now: 1) == nil,
+          "multiple calls cannot reserve a menu phase")
+    check(policy.reserveMenuWindow(for: secondID, calls: [call()], now: 1) == nil,
+          "menu phase must match the active call")
+    check(policy.reserveMenuWindow(for: firstID, calls: [call()], now: 19.5) != nil,
+          "only a valid call enters the menu phase")
+    check(policy.decision(calls: [call()], enabled: true, now: 28) == .expired(firstID),
+          "menu phase is still bounded")
+    check(!policy.reserveStart(for: firstID, calls: [call()]), "expired menu never starts recording")
+    check(policy.decision(calls: [], enabled: true, now: 29) == .noCall,
+          "ended calls clear their menu reservations")
+    check(policy.decision(calls: [call()], enabled: true, now: 30) == .inspect(firstID),
+          "a genuinely new session may reuse an ended UUID")
+    check(policy.reserveMenuWindow(for: firstID, calls: [call()], now: 30) != nil,
+          "the new session can reserve its own menu phase")
+}
+
+print("CallTapPolicy: all state-machine, menu-readiness, and call-screen checks passed")

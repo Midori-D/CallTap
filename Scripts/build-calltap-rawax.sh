@@ -9,7 +9,7 @@ xcodebuild build -project iCTRL.xcodeproj -scheme CallTapRawAX -configuration Re
   -derivedDataPath build/rawax-ios -destination 'generic/platform=iOS' ARCHS=arm64 \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
   SWIFT_ACTIVE_COMPILATION_CONDITIONS='CALLTAP_AUTOMATION CALLTAP_RAWAX' \
-  MARKETING_VERSION=1.1.3 CURRENT_PROJECT_VERSION=7
+  MARKETING_VERSION=1.1.4 CURRENT_PROJECT_VERSION=8
 APP="$ROOT/build/rawax-ios/Build/Products/Release-iphoneos/iCTRL.app"
 [[ -d "$APP" ]] || { echo "App bundle missing" >&2; exit 1; }
 # This target must remain a normal app with no XCTest dependency or test plugin.
@@ -22,4 +22,4 @@ mkdir -p release build/rawax-payload/Payload
 cp -R "$APP" build/rawax-payload/Payload/
 (cd build/rawax-payload && zip -qr "$ROOT/release/CallTap-AX-unsigned.ipa" Payload)
 python3 Scripts/verify-calltap-ax-ipa.py release/CallTap-AX-unsigned.ipa
-echo 'AirRecord 1.1.3 build 7 packaged; native Shortcut rearming requires device validation.'
+echo 'AirRecord 1.1.4 build 8 packaged; menu stabilization and recording confirmation included.'
