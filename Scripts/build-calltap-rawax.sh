@@ -21,4 +21,5 @@ codesign --verify --deep --strict "$APP"
 mkdir -p release build/rawax-payload/Payload
 cp -R "$APP" build/rawax-payload/Payload/
 (cd build/rawax-payload && zip -qr "$ROOT/release/CallTap-AX-unsigned.ipa" Payload)
+python3 Scripts/verify-calltap-ax-ipa.py release/CallTap-AX-unsigned.ipa
 echo 'CallTap AX 1.1 IPA packaged; device automation still requires validation.'
