@@ -5,6 +5,7 @@ struct CallTapMainView: View {
     @State private var showMount = false
     #if CALLTAP_RAWAX
     @StateObject private var monitor = CallTapRawAXMonitor()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         List {
@@ -21,20 +22,20 @@ struct CallTapMainView: View {
                     .foregroundStyle(.secondary)
             }
             Section("자동 시작") {
-                Label(monitor.isRunning ? "켜짐" : "꺼짐",
+                Label(monitor.isRunning ? "감시 중" : (monitor.isEnabled ? "사용 · 재개 대기" : "꺼짐"),
                       systemImage: monitor.isRunning ? "checkmark.circle.fill" : "pause.circle")
                 Text(monitor.status)
                     .font(.footnote)
-                Button(monitor.isPreparing ? "연결 확인 중…" : "자동 시작 켜기") {
+                Button(monitor.isPreparing ? "연결 확인 중…" : (monitor.isEnabled ? "연결 다시 확인" : "자동 시작 켜기")) {
                     Task { await monitor.start() }
                 }
                 .disabled(monitor.isRunning || monitor.isPreparing)
                 Button("자동 시작 끄기", role: .destructive) { monitor.stop() }
-                    .disabled(!monitor.isRunning && !monitor.isPreparing)
+                    .disabled(!monitor.isEnabled && !monitor.isPreparing)
             }
             Section("첫 확인") {
                 Text("잠금을 해제한 상태에서 통화를 연결하고 기본 통화 화면을 열어 두세요. 녹음 시작 요청 후 실제 녹음 타이머와 저장 결과를 확인하세요.")
-                Text("이 실험판은 iOS가 허용한 백그라운드 실행 시간 안에서만 감시합니다. 시간이 끝나면 중지되며 앱에서 다시 켜야 합니다.")
+                Text("자동 시작 설정은 직접 끌 때까지 유지됩니다. iOS가 백그라운드 실행을 중단하면 감시는 일시 정지되며, 앱으로 돌아오면 연결을 확인하고 자동 재개합니다.")
                     .foregroundStyle(.secondary)
             }
             Section("안내음") {
@@ -43,8 +44,15 @@ struct CallTapMainView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("CallTap 1.1.1")
+        .navigationTitle("CallTap 1.1.2")
         .sheet(isPresented: $showMount) { DDIMountView() }
+        .task { await monitor.resumeIfEnabled() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { Task { await monitor.resumeIfEnabled() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            Task { await monitor.resumeIfEnabled() }
+        }
     }
     #else
     @State private var launchFailed = false

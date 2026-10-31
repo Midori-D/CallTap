@@ -9,7 +9,7 @@ xcodebuild build -project iCTRL.xcodeproj -scheme CallTapRawAX -configuration Re
   -derivedDataPath build/rawax-ios -destination 'generic/platform=iOS' ARCHS=arm64 \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
   SWIFT_ACTIVE_COMPILATION_CONDITIONS='CALLTAP_AUTOMATION CALLTAP_RAWAX' \
-  MARKETING_VERSION=1.1.1 CURRENT_PROJECT_VERSION=3
+  MARKETING_VERSION=1.1.2 CURRENT_PROJECT_VERSION=4
 APP="$ROOT/build/rawax-ios/Build/Products/Release-iphoneos/iCTRL.app"
 [[ -d "$APP" ]] || { echo "App bundle missing" >&2; exit 1; }
 # This target must remain a normal app with no XCTest dependency or test plugin.
@@ -22,4 +22,4 @@ mkdir -p release build/rawax-payload/Payload
 cp -R "$APP" build/rawax-payload/Payload/
 (cd build/rawax-payload && zip -qr "$ROOT/release/CallTap-AX-unsigned.ipa" Payload)
 python3 Scripts/verify-calltap-ax-ipa.py release/CallTap-AX-unsigned.ipa
-echo 'CallTap AX 1.1.1 IPA packaged; device automation still requires validation.'
+echo 'CallTap AX 1.1.2 IPA packaged; persistence and resume still require device validation.'

@@ -17,7 +17,7 @@ def verify(path):
         info = plistlib.loads(archive.read(prefix + 'Info.plist'))
         if info.get('CFBundleIdentifier') != 'com.calltap.prototype.ictrl':
             raise ValueError('Unexpected app identifier.')
-        if info.get('CFBundleShortVersionString') != '1.1.1' or str(info.get('CFBundleVersion')) != '3':
+        if info.get('CFBundleShortVersionString') != '1.1.2' or str(info.get('CFBundleVersion')) != '4':
             raise ValueError('Unexpected AX app version.')
         if any(name.endswith('embedded.mobileprovision') or '.xctest/' in name for name in names):
             raise ValueError('Profiles and XCTest plugins must not be distributed.')
@@ -51,7 +51,7 @@ def verify(path):
             count += 1
         if not count or prefix+info['CFBundleExecutable'] not in names:
             raise ValueError('Main executable missing.')
-        print(f'PASS: normal AX app 1.1.1 (3), {count} signed arm64 binary(s), no XCTest dependency/profile.')
+        print(f'PASS: normal AX app 1.1.2 (4), {count} signed arm64 binary(s), no XCTest dependency/profile.')
 
 if __name__ == '__main__':
     verify(sys.argv[1])

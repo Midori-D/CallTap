@@ -135,6 +135,7 @@ private final class CallTapRawAXGate: @unchecked Sendable {
 
 @MainActor
 final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDelegate {
+    @Published private(set) var isEnabled: Bool
     @Published private(set) var isRunning = false
     @Published private(set) var isPreparing = false
     @Published private(set) var status = "자동 시작이 꺼져 있습니다."
@@ -145,9 +146,29 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     private var workerIsRunning = false
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var preparationID = UUID()
+    private let defaults: UserDefaults
+    private static let enabledKey = "CallTap.RawAX.autoStartEnabled"
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        isEnabled = defaults.bool(forKey: Self.enabledKey)
+        super.init()
+        if isEnabled { status = "자동 시작 설정이 유지되어 있습니다. 연결을 확인하면 재개합니다." }
+    }
 
     func start() async {
-        guard !isRunning, !isPreparing else { return }
+        isEnabled = true
+        defaults.set(true, forKey: Self.enabledKey)
+        await prepare()
+    }
+
+    func resumeIfEnabled() async {
+        guard isEnabled, UIApplication.shared.applicationState == .active else { return }
+        await prepare()
+    }
+
+    private func prepare() async {
+        guard isEnabled, !isRunning, !isPreparing else { return }
         isPreparing = true
         let request = UUID()
         preparationID = request
@@ -173,8 +194,12 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         }
 
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "CallTap Raw AX") { [weak self] in
-            Task { @MainActor in
-                self?.stop(message: "백그라운드 허용 시간이 끝나 감시를 멈췄습니다. 앱에서 다시 켜 주세요.")
+            // UIKit invokes expiration on the main actor. End its assertion
+            // synchronously, and never let an old expiration pause a new run.
+            guard let self, self.preparationID == request else { return }
+            self.pause(message: "자동 시작 설정은 켜져 있습니다. iOS가 감시를 일시 중단했으며 앱으로 돌아오면 자동 재개합니다.")
+            if UIApplication.shared.applicationState == .active {
+                Task { await self.resumeIfEnabled() }
             }
         }
         guard backgroundTask != .invalid else {
@@ -198,10 +223,12 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     }
 
     func stop() {
-        stop(message: "자동 시작을 껐습니다. 이미 시작된 기본 녹음은 통화 화면에서 중지할 수 있습니다.")
+        isEnabled = false
+        defaults.set(false, forKey: Self.enabledKey)
+        pause(message: "자동 시작을 껐습니다. 이미 시작된 기본 녹음은 통화 화면에서 중지할 수 있습니다.")
     }
 
-    private func stop(message: String) {
+    private func pause(message: String) {
         preparationID = UUID()
         gate.stop() // Invalidates worker callbacks before touching UI/task state.
         isRunning = false
