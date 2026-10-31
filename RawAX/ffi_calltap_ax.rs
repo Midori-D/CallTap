@@ -7,6 +7,25 @@ use idevice::IdeviceError;
 /// 1 reserve More, 2 reserve recording start. Called on the invoking worker.
 pub type CallTapAXGuard = Option<unsafe extern "C" fn(*mut c_void,u32)->bool>;
 
+/// Read-only AX service/root/snapshot check. Caller has already authenticated
+/// RP and RSD; successful TCP reachability alone is not accepted as readiness.
+/// Handles remain owned by the caller on their original worker thread.
+///
+/// # Safety
+/// Both handles must be valid and exclusively borrowed until this call returns.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn calltap_ax_probe(
+    adapter:*mut AdapterHandle, handshake:*mut RsdHandshakeHandle,
+)->*mut IdeviceFfiError {
+    if adapter.is_null()||handshake.is_null(){return ffi_err!(IdeviceError::FfiInvalidArg);}
+    let result=run_sync_local(async move {
+        let operation=idevice::dvt::calltap_ax::probe(unsafe{&mut (*adapter).0},unsafe{&mut (*handshake).0});
+        tokio::time::timeout(Duration::from_secs(12),operation).await
+            .map_err(|_|IdeviceError::UnexpectedResponse("CallTap AX: probe timed out".into()))?
+    });
+    match result {Ok(())=>null_mut(),Err(error)=>ffi_err!(error)}
+}
+
 /// Inspects native call UI and performs at most one reserved native AX press.
 /// Caller owns adapter/handshake, must keep them on their original thread, and
 /// must not reuse either until this bounded call returns. No XCTest is started.

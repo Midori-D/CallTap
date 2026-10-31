@@ -93,11 +93,13 @@ final class DDIMounter: ObservableObject {
             // VPN surfaces as "device socket io failed", which names a socket
             // rather than the step the user has to fix — and the tunnel is down
             // after every reboot, so this is the common case, not an edge one.
+            #if !CALLTAP_DIRECT
             switch await LocalDevVPN.probeTunnel() {
             case .reachable: break
             case .localNetworkDenied: throw DDIError.localNetworkDenied
             case .unreachable: throw DDIError.tunnelDown
             }
+            #endif
 
             let pairingPath = PairingFileStore.storedURL.path
             let method = DeveloperDiskImageStore.mountMethod
@@ -242,6 +244,26 @@ final class DDIMounter: ObservableObject {
                                                  imageDir: String,
                                                  report: @escaping (Phase) -> Void) throws {
         ictrlLog("DDI mount starting — \(method.rawValue) image from \(imageDir)")
+        #if CALLTAP_DIRECT
+        var connectionFailures: [String] = []
+        for endpoint in CallTapDirectEndpoint.allCases {
+            var enteredMount = false
+            do {
+                try CallTapDirectTransport.withConnection(pairingPath: pairingPath, endpoint: endpoint) { adapter, handshake in
+                    enteredMount = true
+                    try performMountOnConnection(adapter: adapter, handshake: handshake, method: method,
+                                                 imageDir: imageDir, report: report)
+                }
+                return
+            } catch {
+                // Once a mount may have been dispatched, never replay it on
+                // the other address after an ambiguous network failure.
+                if enteredMount { throw error }
+                connectionFailures.append("\(endpoint.title): \(error.localizedDescription)")
+            }
+        }
+        throw DDIError.tunnelUnavailable(connectionFailures.joined(separator: "\n"))
+        #else
         primeCryptoProvider()
 
         var pairing: OpaquePointer?
@@ -272,7 +294,16 @@ final class DDIMounter: ObservableObject {
         guard let adapter, let handshake else {
             throw DDIError.tunnelUnavailable("tunnel returned no handles")
         }
+        try performMountOnConnection(adapter: adapter, handshake: handshake, method: method,
+                                     imageDir: imageDir, report: report)
+        #endif
+    }
 
+    nonisolated private static func performMountOnConnection(adapter: OpaquePointer,
+                                                 handshake: OpaquePointer,
+                                                 method: DeveloperDiskImageStore.MountMethod,
+                                                 imageDir: String,
+                                                 report: @escaping (Phase) -> Void) throws {
         report(.queryingDevice)
 
         // Already mounted? iOS answers a second mount with a bare
@@ -392,8 +423,12 @@ final class DDIMounter: ObservableObject {
         // string to someone with no way to look it up.
         var detail = "\(message) (code \(code))"
         if message.contains("device socket io failed") || message.contains("connect:") {
+            #if CALLTAP_DIRECT
+            detail += ". Direct connection was interrupted. Run the direct connection check again."
+            #else
             detail += ". The tunnel isn't reachable — LocalDevVPN is most likely disconnected "
                     + "(it doesn't survive a reboot). Connect it and try again."
+            #endif
         }
         if message.contains("ImageMountFailed") {
             detail += ". The device rejected the image — usually because it doesn't match this "

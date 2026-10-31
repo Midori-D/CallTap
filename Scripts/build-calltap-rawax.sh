@@ -8,10 +8,12 @@ xcodegen generate --quiet
 xcodebuild build -project iCTRL.xcodeproj -scheme CallTapRawAX -configuration Release \
   -derivedDataPath build/rawax-ios -destination 'generic/platform=iOS' ARCHS=arm64 \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= \
-  SWIFT_ACTIVE_COMPILATION_CONDITIONS='CALLTAP_AUTOMATION CALLTAP_RAWAX' \
-  MARKETING_VERSION=1.1.2 CURRENT_PROJECT_VERSION=4
+  SWIFT_ACTIVE_COMPILATION_CONDITIONS='CALLTAP_AUTOMATION CALLTAP_RAWAX CALLTAP_DIRECT' \
+  MARKETING_VERSION=1.2.0 CURRENT_PROJECT_VERSION=5
 APP="$ROOT/build/rawax-ios/Build/Products/Release-iphoneos/iCTRL.app"
 [[ -d "$APP" ]] || { echo "App bundle missing" >&2; exit 1; }
+/usr/libexec/PlistBuddy -c 'Set :CFBundleDisplayName CallTap Direct' "$APP/Info.plist"
+/usr/libexec/PlistBuddy -c 'Add :CallTapDirectOnly bool true' "$APP/Info.plist"
 # This target must remain a normal app with no XCTest dependency or test plugin.
 if find "$APP" -name '*.xctest' -print -quit | grep -q .; then exit 1; fi
 if otool -L "$APP/iCTRL" | grep -E 'XCTest|XCUIAutomation'; then exit 1; fi
@@ -22,4 +24,4 @@ mkdir -p release build/rawax-payload/Payload
 cp -R "$APP" build/rawax-payload/Payload/
 (cd build/rawax-payload && zip -qr "$ROOT/release/CallTap-AX-unsigned.ipa" Payload)
 python3 Scripts/verify-calltap-ax-ipa.py release/CallTap-AX-unsigned.ipa
-echo 'CallTap AX 1.1.2 IPA packaged; persistence and resume still require device validation.'
+echo 'CallTap Direct 1.2.0 IPA packaged; VPN-off connectivity still requires device validation.'
