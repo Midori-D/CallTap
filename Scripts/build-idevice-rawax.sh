@@ -11,7 +11,6 @@ fi
 [[ "$(git -C "$SRC" rev-parse HEAD)" == "$PIN" ]] || { echo "Unexpected idevice revision" >&2; exit 1; }
 cp "$ROOT/RawAX/calltap_ax.rs" "$SRC/idevice/src/services/dvt/calltap_ax.rs"
 cp "$ROOT/RawAX/ffi_calltap_ax.rs" "$SRC/ffi/src/dvt/calltap_ax.rs"
-cp "$ROOT/RawAX/ffi_calltap_direct.rs" "$SRC/ffi/src/dvt/calltap_direct.rs"
 python3 - "$SRC" <<'PY'
 from pathlib import Path
 import sys
@@ -19,11 +18,10 @@ root = Path(sys.argv[1])
 for name, line in (
     ('idevice/src/services/dvt/mod.rs', '\n#[cfg(feature = "rsd")]\npub mod calltap_ax;\n'),
     ('ffi/src/dvt/mod.rs', '\n#[cfg(all(feature = "core_device_proxy", feature = "rsd"))]\npub mod calltap_ax;\n'),
-    ('ffi/src/dvt/mod.rs', '\n#[cfg(all(feature = "core_device_proxy", feature = "rsd"))]\npub mod calltap_direct;\n'),
 ):
     target = root / name
     text = target.read_text()
-    if line.strip().splitlines()[-1] not in text:
+    if 'pub mod calltap_ax;' not in text:
         target.write_text(text + line)
 PY
 mkdir -p "$SRC/idevice/src/services/dvt/calltap_ax_fixtures"
@@ -31,7 +29,6 @@ cp "$ROOT/RawAX/tests/"*.bplist "$SRC/idevice/src/services/dvt/calltap_ax_fixtur
 export CARGO_TARGET_DIR="$ROOT/build/cargo-rawax"
 # Host tests execute only our protocol/selection tests, before any device build.
 cargo test --locked --manifest-path "$SRC/Cargo.toml" -p idevice --features full,aws-lc calltap_ax::tests --lib
-cargo test --locked --manifest-path "$SRC/Cargo.toml" -p idevice-ffi calltap_direct::tests --lib
 rustup target add aarch64-apple-ios
 SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
 BINDGEN_EXTRA_CLANG_ARGS="--sysroot=$SDK" IPHONEOS_DEPLOYMENT_TARGET=17.0 \

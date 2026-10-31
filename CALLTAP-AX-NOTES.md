@@ -1,6 +1,8 @@
-# CallTap AX 1.1.2 실험판
+# AirRecord 1.1.2
 
-이 문서는 이전 VPN 버전의 기록입니다. 현재 빌드 스크립트는 VPN 없는 직접 연결 시험판 1.2.0을 생성합니다. 현재 설치·연결 검사 방법과 제한은 [CALLTAP-DIRECT-NOTES.md](CALLTAP-DIRECT-NOTES.md)를 확인하세요.
+2026-10-31: 동작을 확인한 CallTap AX 1.1.2 코드로 되돌리고 이름을 AirRecord로 변경했습니다. 루피 기반 새 아이콘을 사용합니다. 버전은 1.1.2 / 빌드 6이며, 설치 업데이트를 위해 기존 번들 ID를 유지합니다. 1.2.0 직접 연결 실험은 제외했습니다. 실험 결과 문서 `CALLTAP-DIRECT-NOTES.md`는 기록으로만 보존합니다.
+
+설치는 무료 서명 앱 슬롯이 남아 있다면 SideStore의 독립 앱을 권장합니다. LiveContainer/JIT는 필요하지 않지만 LocalDevVPN·페어링·DDI는 계속 필요하고, 백그라운드 시간 제한도 유지됩니다. LiveContainer에서 독립 앱으로 이동하면 데이터 컨테이너가 달라 페어링과 DDI 파일을 다시 준비해야 할 수 있습니다. LiveContainer 복귀 동작은 guest 앱을 종료하므로, 감시를 유지하는 뒤로가기 버튼으로 제공하지 않습니다.
 
 1.1.2 변경: 사용자가 켠 자동 시작 설정을 저장하고, 백그라운드 실행 시간이 끝나도 설정은 끄지 않습니다. 실제 감시가 멈춘 상태는 `사용 · 재개 대기`로 표시하며 앱으로 돌아오면 연결 확인 후 재개합니다. 직접 끄면 저장된 설정도 꺼집니다. 이 변경은 iOS의 실행 시간 제한이나 LocalDevVPN 의존성을 제거하지 않습니다. 위치·음성 재생 권한이나 별도 유지 기능은 추가하지 않았습니다.
 
@@ -12,7 +14,7 @@ XCTest를 실행하는 Runner 대신, 일반 앱이 기기의 개발자 접근�
 
 ## 빌드와 설치
 
-GitHub Actions의 **Build CallTap AX without XCTest**를 실행합니다. Xcode 27 호스트에서 고정된 idevice `d32c8189c51c2789496b0768039419c3705498c3`에 전용 AX 모듈을 추가하고, 프로토콜 테스트 뒤 iOS arm64 앱을 빌드합니다. 결과 파일은 `CallTap-AX-unsigned.ipa`, 버전은 1.1.2 / 빌드 4입니다.
+GitHub Actions의 **Build CallTap AX without XCTest**를 실행합니다. Xcode 27 호스트에서 고정된 idevice `d32c8189c51c2789496b0768039419c3705498c3`에 전용 AX 모듈을 추가하고, 프로토콜 테스트 뒤 iOS arm64 앱을 빌드합니다. 결과 파일은 `CallTap-AX-unsigned.ipa`, 버전은 1.1.2 / 빌드 6입니다.
 
 기존 Helper와 같은 번들 ID를 사용합니다. 페어링 파일·LocalDevVPN·개발자 디스크 준비를 마친 뒤 앱에서 자동 시작을 켜고 기본 전화 화면으로 이동합니다. 기존 XCTest Runner는 종료해 둡니다. LiveContainer 내부 설치 경로의 콜백과 실행 시간은 추가 실기기 확인이 필요합니다.
 

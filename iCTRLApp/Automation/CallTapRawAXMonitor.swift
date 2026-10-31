@@ -139,12 +139,6 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     @Published private(set) var isRunning = false
     @Published private(set) var isPreparing = false
     @Published private(set) var status = "자동 시작이 꺼져 있습니다."
-    #if CALLTAP_DIRECT
-    @Published private(set) var connectionDetails = "VPN을 모두 끈 뒤 직접 연결 검사를 실행하세요."
-    private var connectionWorkerIsRunning = false
-    private var connectionCancellation: CallTapConnectionCancellation?
-    #endif
-    private var directHost: String?
 
     private let observer = CXCallObserver()
     private let gate = CallTapRawAXGate()
@@ -153,11 +147,7 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var preparationID = UUID()
     private let defaults: UserDefaults
-    #if CALLTAP_DIRECT
-    private static let enabledKey = "CallTap.Direct.autoStartEnabled"
-    #else
     private static let enabledKey = "CallTap.RawAX.autoStartEnabled"
-    #endif
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -177,18 +167,8 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         await prepare()
     }
 
-    #if CALLTAP_DIRECT
-    func testDirectConnection() async { await prepare(startMonitoring: false) }
-    #endif
-
-    private func prepare(startMonitoring: Bool = true) async {
-        guard (!startMonitoring || isEnabled), !isRunning, !isPreparing else { return }
-        #if CALLTAP_DIRECT
-        guard !connectionWorkerIsRunning else {
-            setStatus("이전 연결 검사를 정리하고 있습니다. 잠시 후 다시 확인합니다.")
-            return
-        }
-        #endif
+    private func prepare() async {
+        guard isEnabled, !isRunning, !isPreparing else { return }
         isPreparing = true
         let request = UUID()
         preparationID = request
@@ -199,47 +179,6 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
             return
         }
 
-        #if CALLTAP_DIRECT
-        directHost = nil
-        let cancellation = CallTapConnectionCancellation()
-        connectionCancellation = cancellation
-        connectionWorkerIsRunning = true
-        let pairingPath = PairingFileStore.storedURL.path
-        let result = await withCheckedContinuation { (continuation: CheckedContinuation<CallTapDirectProbeReport, Never>) in
-            let thread = Thread { [weak self] in
-                let result = CallTapDirectTransport.probe(pairingPath: pairingPath,
-                    shouldContinue: { !cancellation.isCancelled }) { message in
-                    Task { @MainActor in
-                        guard let self, self.preparationID == request, self.isPreparing else { return }
-                        self.connectionDetails = message
-                    }
-                }
-                continuation.resume(returning: result)
-            }
-            thread.name = "calltap.direct.probe"
-            thread.stackSize = 4 * 1024 * 1024
-            thread.qualityOfService = .userInitiated
-            thread.start()
-        }
-        connectionWorkerIsRunning = false
-        guard preparationID == request, isPreparing, !cancellation.isCancelled else {
-            if isEnabled { Task { await self.resumeIfEnabled() } }
-            return
-        }
-        connectionCancellation = nil
-        connectionDetails = result.detail
-        guard let endpoint = result.endpoint else {
-            isPreparing = false
-            setStatus("직접 연결 검사가 실패해 자동 시작하지 않았습니다. 아래 검사 결과를 확인하세요.")
-            return
-        }
-        directHost = endpoint.rawValue
-        if !startMonitoring {
-            isPreparing = false
-            setStatus("직접 연결 검사에 성공했습니다. 모든 VPN이 꺼져 있는지 확인한 뒤 자동 시작을 켜세요.")
-            return
-        }
-        #else
         let probe = await LocalDevVPN.probeTunnel()
         guard preparationID == request, isPreparing else { return }
         switch probe {
@@ -253,7 +192,6 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
             setStatus("LocalDevVPN을 연결한 뒤 다시 시작하세요.")
             return
         }
-        #endif
 
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "CallTap Raw AX") { [weak self] in
             // UIKit invokes expiration on the main actor. End its assertion
@@ -292,11 +230,6 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
 
     private func pause(message: String) {
         preparationID = UUID()
-        #if CALLTAP_DIRECT
-        connectionCancellation?.cancel()
-        connectionCancellation = nil
-        #endif
-        directHost = nil
         gate.stop() // Invalidates worker callbacks before touching UI/task state.
         isRunning = false
         isPreparing = false
@@ -354,14 +287,13 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         workerIsRunning = true
         let gate = self.gate
         let pairingPath = PairingFileStore.storedURL.path
-        let directHost = self.directHost
         // At most one worker exists, including across stop/start. A dedicated
         // thread avoids the small Swift concurrency worker stack used by FFI.
         let thread = Thread { [weak self] in
             let result: Result<CallTapRawAXOutcome, Error>
             do {
                 result = .success(try CallTapRawAXClient.inspectAndAct(
-                    pairingPath: pairingPath, directHost: directHost, mayOpenMore: inspection.mayOpenMore,
+                    pairingPath: pairingPath, mayOpenMore: inspection.mayOpenMore,
                     shouldContinue: { gate.permits(inspection) },
                     reserveMore: { gate.reserveMore(inspection) },
                     reserveStart: { gate.reserveStart(inspection) }))

@@ -35,20 +35,11 @@ enum CallTapRawAXClient {
         }
     }
     /// Handles remain on the invoking dedicated worker for their entire lifetime.
-    static func inspectAndAct(pairingPath: String, directHost: String? = nil, mayOpenMore: Bool,
+    static func inspectAndAct(pairingPath: String, mayOpenMore: Bool,
                               shouldContinue: @escaping () -> Bool,
                               reserveMore: @escaping () -> Bool,
                               reserveStart: @escaping () -> Bool) throws -> CallTapRawAXOutcome {
         guard shouldContinue() else { return .waiting("현재 통화 상태를 다시 확인합니다.") }
-        #if CALLTAP_DIRECT
-        guard let directHost, let endpoint = CallTapDirectEndpoint(rawValue: directHost) else {
-            throw CallTapRawAXError(message: "직접 연결 검사를 먼저 완료하세요.")
-        }
-        return try CallTapDirectTransport.withConnection(pairingPath: pairingPath, endpoint: endpoint) { adapter, handshake in
-            try inspect(adapter: adapter, handshake: handshake, mayOpenMore: mayOpenMore,
-                        shouldContinue: shouldContinue, reserveMore: reserveMore, reserveStart: reserveStart)
-        }
-        #else
         DDIMounter.primeCryptoProvider()
         var pairing: OpaquePointer?
         try check("페어링 파일 읽기") { rp_pairing_file_read(pairingPath, &pairing) }
@@ -76,15 +67,6 @@ enum CallTapRawAXClient {
         guard let adapter, let handshake else {
             throw CallTapRawAXError(message: "개발자 연결 핸들을 만들지 못했습니다.")
         }
-        return try inspect(adapter: adapter, handshake: handshake, mayOpenMore: mayOpenMore,
-                           shouldContinue: shouldContinue, reserveMore: reserveMore, reserveStart: reserveStart)
-        #endif
-    }
-
-    private static func inspect(adapter: OpaquePointer, handshake: OpaquePointer, mayOpenMore: Bool,
-                                shouldContinue: @escaping () -> Bool,
-                                reserveMore: @escaping () -> Bool,
-                                reserveStart: @escaping () -> Bool) throws -> CallTapRawAXOutcome {
         let callbacks = CallTapRawAXCallbacks(shouldContinue, reserveMore, reserveStart)
         var outcome: UInt32 = 0
         try withExtendedLifetime(callbacks) {
@@ -111,11 +93,7 @@ enum CallTapRawAXClient {
         if let range = raw.range(of: "CallTap AX:") {
             throw CallTapRawAXError(message: String(raw[range.lowerBound...].prefix(180)))
         }
-        #if CALLTAP_DIRECT
-        throw CallTapRawAXError(message: "\(operation) 실패 (코드 \(code)). 직접 연결 검사와 개발자 디스크 상태를 확인하세요.")
-        #else
         throw CallTapRawAXError(message: "\(operation) 실패 (코드 \(code)). VPN·개발자 디스크를 확인하세요.")
-        #endif
     }
 }
 #endif

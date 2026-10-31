@@ -40,7 +40,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: "$(ICTRL_BUNDLE_PREFIX).ictrl"
         SWIFT_OBJC_BRIDGING_HEADER: iCTRLApp/Automation/CallTapRawAX-Bridging-Header.h
-        INFOPLIST_KEY_CFBundleDisplayName: "CallTap Helper"
+        INFOPLIST_KEY_CFBundleDisplayName: "AirRecord"
+        INFOPLIST_KEY_CFBundleName: "AirRecord"
         GENERATE_INFOPLIST_FILE: YES
         MARKETING_VERSION: "1.0.0"
         CURRENT_PROJECT_VERSION: 1
@@ -50,7 +51,7 @@ targets:
         INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "iCTRL reaches this device's debug service through LocalDevVPN to mount the Developer Disk Image, and serves the automation API on your network."
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "AirRecord uses LocalDevVPN to reach this iPhone's developer service and start native call recording."
         # LSApplicationQueriesSchemes can't be expressed as an INFOPLIST_KEY_
         # setting — Xcode only maps an allowlist of keys and drops this one
         # silently — so it lives in a real plist that gets merged in. Without it

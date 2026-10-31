@@ -17,11 +17,16 @@ def verify(path):
         info = plistlib.loads(archive.read(prefix + 'Info.plist'))
         if info.get('CFBundleIdentifier') != 'com.calltap.prototype.ictrl':
             raise ValueError('Unexpected app identifier.')
-        if info.get('CFBundleShortVersionString') != '1.2.0' or str(info.get('CFBundleVersion')) != '5':
+        if info.get('CFBundleShortVersionString') != '1.1.2' or str(info.get('CFBundleVersion')) != '6':
             raise ValueError('Unexpected AX app version.')
-        if info.get('CallTapDirectOnly') is not True:
-            raise ValueError('Direct-only build marker missing.')
-        if any(name.endswith('embedded.mobileprovision') or '.xctest/' in name or '.appex/' in name for name in names):
+        if info.get('CFBundleDisplayName') != 'AirRecord':
+            raise ValueError('Unexpected app display name.')
+        if info.get('CallTapDirectOnly'):
+            raise ValueError('Experimental direct connection marker must be absent.')
+        icon = info.get('CFBundleIcons', {}).get('CFBundlePrimaryIcon', {})
+        if icon.get('CFBundleIconName') != 'AppIcon':
+            raise ValueError('App icon catalog missing.')
+        if any(name.endswith('embedded.mobileprovision') or '.xctest/' in name for name in names):
             raise ValueError('Profiles and XCTest plugins must not be distributed.')
         count = 0
         for name in names:
@@ -30,6 +35,8 @@ def verify(path):
             binary = archive.read(name)
             if binary[:4] != b'\xcf\xfa\xed\xfe':
                 continue
+            if b'calltap_direct_connect' in binary:
+                raise ValueError('Experimental direct connector must be absent.')
             if len(binary) < 32:
                 raise ValueError('Truncated Mach-O.')
             _, cpu, _, _, commands, command_bytes, _, _ = struct.unpack_from('<8I', binary)
@@ -53,7 +60,7 @@ def verify(path):
             count += 1
         if not count or prefix+info['CFBundleExecutable'] not in names:
             raise ValueError('Main executable missing.')
-        print(f'PASS: direct-only app 1.2.0 (5), {count} signed arm64 binary(s), no XCTest dependency/profile/extension.')
+        print(f'PASS: AirRecord 1.1.2 (6), AppIcon, {count} signed arm64 binary(s), no direct connector/XCTest/profile.')
 
 if __name__ == '__main__':
     verify(sys.argv[1])

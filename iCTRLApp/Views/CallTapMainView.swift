@@ -10,42 +10,17 @@ struct CallTapMainView: View {
     var body: some View {
         List {
             Section {
-                #if CALLTAP_DIRECT
-                Label("VPN 없는 직접 연결 시험판", systemImage: "waveform")
-                #else
-                Label("녹음 자동 시작 실험판", systemImage: "waveform")
-                #endif
+                Label("통화 녹음 자동 시작", systemImage: "waveform")
                 Text("기본 통화 화면의 더 보기와 통화 녹음 항목을 순서대로 누릅니다. 녹음과 저장은 아이폰의 기본 기능이 처리합니다.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             Section("실행 준비") {
                 Button("페어링 파일 · 개발자 디스크 설정") { showMount = true }
-                #if CALLTAP_DIRECT
-                Text("설정에서 LocalDevVPN과 다른 VPN을 모두 끄고 아이폰 잠금을 해제하세요. 페어링 파일과 개발자 디스크는 계속 필요합니다.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                #else
                 Text("LocalDevVPN 연결과 개발자 디스크 준비를 마친 뒤 자동 시작을 켜세요.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                #endif
             }
-            #if CALLTAP_DIRECT
-            Section("직접 연결 검사") {
-                Button(monitor.isPreparing ? "연결 검사 중…" : "직접 연결 검사") {
-                    Task { await monitor.testDirectConnection() }
-                }
-                .disabled(monitor.isRunning || monitor.isPreparing)
-                Text(monitor.connectionDetails)
-                    .font(.footnote)
-                    .textSelection(.enabled)
-                ShareLink("검사 결과 공유", item: monitor.connectionDetails)
-                Text("포트 응답뿐 아니라 인증과 접근성 읽기까지 확인합니다. 검사는 통화 버튼을 누르지 않습니다. 성공해도 VPN이 꺼져 있는지는 설정에서 직접 확인해 주세요.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-            }
-            #endif
             Section("자동 시작") {
                 Label(monitor.isRunning ? "감시 중" : (monitor.isEnabled ? "사용 · 재개 대기" : "꺼짐"),
                       systemImage: monitor.isRunning ? "checkmark.circle.fill" : "pause.circle")
@@ -64,18 +39,13 @@ struct CallTapMainView: View {
                     .foregroundStyle(.secondary)
             }
             Section("안내음") {
-                Text("안내음은 iOS와 기존 AirBeep 설정을 따릅니다. CallTap은 안내음 파일을 변경하지 않습니다.")
+                Text("안내음은 iOS와 기존 AirBeep 설정을 따릅니다. AirRecord는 안내음 파일을 변경하지 않습니다.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
-        #if CALLTAP_DIRECT
-        .navigationTitle("CallTap Direct 1.2")
-        .sheet(isPresented: $showMount) { CallTapDirectSetupView() }
-        #else
-        .navigationTitle("CallTap 1.1.2")
+        .navigationTitle("AirRecord 1.1.2")
         .sheet(isPresented: $showMount) { DDIMountView() }
-        #endif
         .task { await monitor.resumeIfEnabled() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await monitor.resumeIfEnabled() } }

@@ -17,9 +17,6 @@ const TRAIT_BUTTON: u64 = 1;
 const TRAIT_SELECTED: u64 = 8;
 type Token = Value;
 
-/// Initializes the existing pinned crypto backend without opening a socket.
-pub fn initialize_crypto() { crate::ensure_default_crypto_provider(); }
-
 fn err(message: &str) -> IdeviceError { IdeviceError::UnexpectedResponse(format!("CallTap AX: {message}")) }
 fn dict(value: &Value) -> Result<&Dictionary, IdeviceError> { value.as_dictionary().ok_or_else(|| err("expected dictionary")) }
 fn field<'a>(value: &'a Value, key: &str) -> Result<&'a Value, IdeviceError> { dict(value)?.get(key).ok_or_else(|| err("missing required field")) }
@@ -189,12 +186,6 @@ impl Ax {
         let options=map(vec![("attributes",Value::Array([2001u64,2002,2003,2004,5019,2006,2025,5003,5004,3003].into_iter().map(|v|Value::Integer(v.into())).collect())),("maxDepth",Value::Integer(48.into())),("maxChildren",Value::Integer(512.into())),("maxArrayCount",Value::Integer(512.into())),("traverseFromParentsToChildren",Value::Boolean(true)),("snapshotKeyHonorModalViews",Value::Boolean(false))]);
         self.read(2,Some(map(vec![("parameter",options)])),Some(root),0).await
     }
-    async fn probe_snapshot(&mut self,root:&Token)->Result<Value,IdeviceError> {
-        // A connection test needs no labels, values, screenshots, or call UI.
-        // Ask only for visibility with a shallow, bounded result.
-        let options=map(vec![("attributes",Value::Array(vec![Value::Integer(2025.into())])),("maxDepth",Value::Integer(1.into())),("maxChildren",Value::Integer(16.into())),("maxArrayCount",Value::Integer(16.into())),("traverseFromParentsToChildren",Value::Boolean(true)),("snapshotKeyHonorModalViews",Value::Boolean(false))]);
-        self.read(2,Some(map(vec![("parameter",options)])),Some(root),0).await
-    }
     async fn hit(&mut self,point:(f64,f64))->Result<Token,IdeviceError> {
         self.read(6,Some(map(vec![("point",Value::Array(vec![Value::Real(point.0),Value::Real(point.1)]))])),None,0).await
     }
@@ -266,54 +257,15 @@ fn call_controls(nodes:&[Node])->bool {
     [vec!["mute","음소거","소리 끔"],vec!["keypad","키패드"],vec!["speaker","audio","스피커","오디오"]].iter().all(|family|family.iter().any(|name|names.contains(*name)))
 }
 
-async fn native_pid(provider:&mut impl RsdProvider,hs:&mut RsdHandshake,bundles:&[&str],unavailable:&str)->Result<u64,IdeviceError> {
+async fn call_pid(provider:&mut impl RsdProvider,hs:&mut RsdHandshake)->Result<u64,IdeviceError> {
     let mut server=RemoteServerClient::connect_rsd(provider,hs).await?;
     server.perform_handshake(None,Duration::from_secs(3)).await?;
     let mut channel=server.make_channel("com.apple.instruments.server.services.processcontrol").await?;
-    for bundle in bundles {
-        let reply=channel.call_method_with_reply(Some("processIdentifierForBundleIdentifier:"),Some(vec![AuxValue::archived_value(Value::String((*bundle).into()))])).await?;
+    for bundle in ["com.apple.InCallService","com.apple.mobilephone"] {
+        let reply=channel.call_method_with_reply(Some("processIdentifierForBundleIdentifier:"),Some(vec![AuxValue::archived_value(Value::String(bundle.into()))])).await?;
         if let Some(pid)=reply.data.as_ref().and_then(number).filter(|pid|*pid>0) {return Ok(pid);}
     }
-    Err(err(unavailable))
-}
-
-async fn call_pid(provider:&mut impl RsdProvider,hs:&mut RsdHandshake)->Result<u64,IdeviceError> {
-    native_pid(provider,hs,&["com.apple.InCallService","com.apple.mobilephone"],"native call app is not running").await
-}
-
-fn validate_probe_snapshot(snapshot:&Value,root:&Token)->Result<(),IdeviceError> {
-    if key(field(snapshot,ELEMENT)?)?!=key(root)? {return Err(err("probe AX snapshot identity invalid"));}
-    let attrs=dict(field(snapshot,ATTRS)?)?;
-    if !matches!(attrs.get("2025"),Some(Value::Boolean(_)))
-        && !attrs.get("2025").and_then(number).is_some_and(|value|value<=1) {
-        return Err(err("probe AX snapshot visibility unavailable"));
-    }
-    let children=field(snapshot,CHILDREN)?.as_array().ok_or_else(||err("probe AX snapshot child list invalid"))?;
-    let child_count=number(field(snapshot,CHILD_COUNT)?).ok_or_else(||err("probe AX snapshot count invalid"))?;
-    if children.len()>16 || child_count<children.len() as u64 {
-        return Err(err("probe AX snapshot bounds invalid"));
-    }
-    // ChildCount can exceed returned children because this probe deliberately
-    // requests a truncated shallow snapshot. Never use it to select an action.
-    Ok(())
-}
-
-/// Read-only full AX-path check after the caller authenticated RP and RSD.
-/// No active call is needed, and this path never invokes AX action type 5.
-pub async fn probe(provider:&mut impl RsdProvider,hs:&mut RsdHandshake)->Result<(),IdeviceError> {
-    let pid=native_pid(provider,hs,&["com.apple.springboard"],"probe system app unavailable").await
-        .map_err(|_|err("probe DVT process lookup failed"))?;
-    let mut ax=Ax::connect(provider,hs).await.map_err(|_|err("probe AX connect/API handshake failed"))?;
-    let result=async {
-        let root=ax.read(1,Some(map(vec![("pid",Value::Integer(pid.into()))])),None,0).await
-            .map_err(|_|err("probe AX root read failed"))?;
-        if key(&root).map_err(|_|err("probe AX root identity invalid"))?.0!=pid {
-            return Err(err("probe AX root identity invalid"));
-        }
-        let snapshot=ax.probe_snapshot(&root).await.map_err(|_|err("probe AX snapshot read failed"))?;
-        validate_probe_snapshot(&snapshot,&root).map_err(|_|err("probe AX snapshot validation failed"))
-    }.await;
-    ax.close().await;result
+    Err(err("native call app is not running"))
 }
 
 // Outcome: 0 waiting, 1 More submitted, 2 start submitted, 3 already recording.
@@ -388,15 +340,4 @@ mod tests {
     #[test] fn independent_press_request_matches(){let expected=decode(include_bytes!("calltap_ax_fixtures/press-request.bplist")).unwrap();let actual=decode(&request(7,None,Some(&reference_token()),5).unwrap()).unwrap();assert_eq!(actual,expected);}
     #[test] fn independent_hit_point_matches(){let expected=decode(include_bytes!("calltap_ax_fixtures/hit-request.bplist")).unwrap();let params=map(vec![("point",Value::Array(vec![Value::Real(123.5),Value::Real(67.25)]))]);let actual=decode(&request(6,Some(params),None,0).unwrap()).unwrap();assert_eq!(field(&actual,"parameters").unwrap(),field(&expected,"parameters").unwrap());}
     #[test] fn malformed_archive_is_rejected(){assert!(decode(b"not an archive").is_err());}
-    #[test] fn probe_snapshot_never_accepts_another_native_root(){
-        let root=token(42,1);
-        let snapshot=map(vec![(ELEMENT,token(43,1)),(ATTRS,map(vec![("2025",Value::Boolean(true))])),(CHILDREN,Value::Array(vec![])),(CHILD_COUNT,Value::Integer(0.into()))]);
-        assert!(validate_probe_snapshot(&snapshot,&root).is_err());
-    }
-    #[test] fn probe_allows_intentionally_truncated_snapshot_but_rejects_oversized_children(){
-        let root=token(42,1);
-        let snapshot=|count:usize|map(vec![(ELEMENT,root.clone()),(ATTRS,map(vec![("2025",Value::Boolean(true))])),(CHILDREN,Value::Array(vec![nil();count])),(CHILD_COUNT,Value::Integer(20.into()))]);
-        assert!(validate_probe_snapshot(&snapshot(16),&root).is_ok());
-        assert!(validate_probe_snapshot(&snapshot(17),&root).is_err());
-    }
 }

@@ -65,11 +65,7 @@ struct iCTRLApp: App {
             }
             // On a fresh install this raises the system prompts; afterwards it
             // only reads them back, and a denial is said once per launch.
-            .task {
-                #if !CALLTAP_DIRECT
-                permission.probe()
-                #endif
-            }
+            .task { permission.probe() }
             .onReceive(permission.$networkData.combineLatest(permission.$localNetwork)) { _ in
                 if !permission.denied.isEmpty { showPermissionAlert = true }
             }
