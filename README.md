@@ -1,5 +1,9 @@
 # CallTap — iOS 27 experimental native call-recording button automation
 
+**CallTap AX 1.1 (experimental):** a normal app uses the device's developer accessibility service instead of a long-running XCTest session. On iPhone 14 Pro / iOS 27.0, a Windows-hosted probe read the call menu and activated the one visible Call Recording control; the user confirmed that the recording timer started with no Automation Running overlay. The new on-device integration is being built and still needs installation testing. It has a finite background execution window, not all-day monitoring.
+
+Use the separate **Build CallTap AX without XCTest** workflow for `CallTap-AX-unsigned.ipa`. It builds only the normal app and tests the pinned Rust protocol extension. See [AX notes](CALLTAP-AX-NOTES.md).
+
 **Experimental IPA; native call-recording activation is still being tested.** Target: iPhone 14 Pro, iOS 27.0, no jailbreak. GitHub Actions builds the installable packages. Device logs confirm Runner startup, connected-call inspection, and the Korean mute/audio/keypad/More controls; the call-screen recognition now accepts that combination without requiring an end-call accessibility label.
 
 [한국어 빌드·설치·검증 안내](CALLTAP-NOTES.md)

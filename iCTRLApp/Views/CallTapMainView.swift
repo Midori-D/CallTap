@@ -3,6 +3,50 @@ import SwiftUI
 
 struct CallTapMainView: View {
     @State private var showMount = false
+    #if CALLTAP_RAWAX
+    @StateObject private var monitor = CallTapRawAXMonitor()
+
+    var body: some View {
+        List {
+            Section {
+                Label("녹음 자동 시작 실험판", systemImage: "waveform")
+                Text("기본 통화 화면의 더 보기와 통화 녹음 항목을 순서대로 누릅니다. 녹음과 저장은 아이폰의 기본 기능이 처리합니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("실행 준비") {
+                Button("페어링 파일 · 개발자 디스크 설정") { showMount = true }
+                Text("LocalDevVPN 연결과 개발자 디스크 준비를 마친 뒤 자동 시작을 켜세요.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            Section("자동 시작") {
+                Label(monitor.isRunning ? "켜짐" : "꺼짐",
+                      systemImage: monitor.isRunning ? "checkmark.circle.fill" : "pause.circle")
+                Text(monitor.status)
+                    .font(.footnote)
+                Button(monitor.isPreparing ? "연결 확인 중…" : "자동 시작 켜기") {
+                    Task { await monitor.start() }
+                }
+                .disabled(monitor.isRunning || monitor.isPreparing)
+                Button("자동 시작 끄기", role: .destructive) { monitor.stop() }
+                    .disabled(!monitor.isRunning && !monitor.isPreparing)
+            }
+            Section("첫 확인") {
+                Text("잠금을 해제한 상태에서 통화를 연결하고 기본 통화 화면을 열어 두세요. 녹음 시작 요청 후 실제 녹음 타이머와 저장 결과를 확인하세요.")
+                Text("이 실험판은 iOS가 허용한 백그라운드 실행 시간 안에서만 감시합니다. 시간이 끝나면 중지되며 앱에서 다시 켜야 합니다.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("안내음") {
+                Text("안내음은 iOS와 기존 AirBeep 설정을 따릅니다. CallTap은 안내음 파일을 변경하지 않습니다.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("CallTap 1.1")
+        .sheet(isPresented: $showMount) { DDIMountView() }
+    }
+    #else
     @State private var launchFailed = false
 
     var body: some View {
@@ -41,4 +85,5 @@ struct CallTapMainView: View {
             Text("CallTap Runner를 SideStore에 직접 설치한 뒤 홈 화면에서 먼저 열어 주세요.")
         }
     }
+    #endif
 }

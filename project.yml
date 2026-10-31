@@ -27,6 +27,7 @@ targets:
       # Shared with the runner: one string table for both processes, so a phrase
       # the user sees in a notification matches the one in the app.
       - path: iCTRLUITests/Localized.swift
+      - path: iCTRLUITests/CallTapPolicy.swift
 
     dependencies:
       # idevice (MIT) — the lockdown/RSD/image-mounter client that does the
@@ -108,6 +109,10 @@ targets:
           echo "✅ Frameworks stripped"
 
 schemes:
+  CallTapRawAX:
+    build:
+      targets:
+        iCTRL: all
   iCTRL:
     build:
       targets:

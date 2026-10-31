@@ -1,0 +1,46 @@
+name: Build CallTap AX without XCTest
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Select Xcode with iPhoneOS SDK 27
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK_PATH="$(python3 - <<'PY'
+          import glob, os, re, subprocess
+          choices = []
+          for path in glob.glob('/Applications/Xcode*.app/Contents/Developer'):
+              try:
+                  sdk = subprocess.check_output(['xcrun','--sdk','iphoneos','--show-sdk-version'], env=dict(os.environ, DEVELOPER_DIR=path), text=True, stderr=subprocess.DEVNULL).strip()
+                  version = tuple(map(int, re.findall(r'\d+', sdk)))
+                  if version[0] >= 27: choices.append((version,path))
+              except subprocess.CalledProcessError: pass
+          if not choices: raise SystemExit('iPhoneOS SDK 27+ not installed')
+          print(max(choices)[1])
+          PY
+          )"
+          echo "DEVELOPER_DIR=$SDK_PATH" >> "$GITHUB_ENV"
+          DEVELOPER_DIR="$SDK_PATH" xcodebuild -version
+      - name: Build tools
+        run: |
+          brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
+          cargo --version
+          rustup --version
+      - name: Test protocol and build normal app
+        run: bash Scripts/build-calltap-rawax.sh
+      - name: Upload CallTap AX
+        uses: actions/upload-artifact@v7
+        with:
+          name: CallTap-AX-experimental
+          path: release/CallTap-AX-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
