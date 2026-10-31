@@ -17,7 +17,7 @@ def verify(path):
         info = plistlib.loads(archive.read(prefix + 'Info.plist'))
         if info.get('CFBundleIdentifier') != 'com.calltap.prototype.ictrl':
             raise ValueError('Unexpected app identifier.')
-        if info.get('CFBundleShortVersionString') != '1.1.2' or str(info.get('CFBundleVersion')) != '6':
+        if info.get('CFBundleShortVersionString') != '1.1.3' or str(info.get('CFBundleVersion')) != '7':
             raise ValueError('Unexpected AX app version.')
         if info.get('CFBundleDisplayName') != 'AirRecord':
             raise ValueError('Unexpected app display name.')
@@ -26,6 +26,9 @@ def verify(path):
         icon = info.get('CFBundleIcons', {}).get('CFBundlePrimaryIcon', {})
         if icon.get('CFBundleIconName') != 'AppIcon':
             raise ValueError('App icon catalog missing.')
+        metadata = [name for name in names if name.startswith(prefix+'Metadata.appintents/') and not name.endswith('/')]
+        if not metadata or not any(b'ResumeAirRecordMonitoringIntent' in archive.read(name) for name in metadata):
+            raise ValueError('Shortcut intent metadata missing.')
         if any(name.endswith('embedded.mobileprovision') or '.xctest/' in name for name in names):
             raise ValueError('Profiles and XCTest plugins must not be distributed.')
         count = 0
@@ -60,7 +63,7 @@ def verify(path):
             count += 1
         if not count or prefix+info['CFBundleExecutable'] not in names:
             raise ValueError('Main executable missing.')
-        print(f'PASS: AirRecord 1.1.2 (6), AppIcon, {count} signed arm64 binary(s), no direct connector/XCTest/profile.')
+        print(f'PASS: AirRecord 1.1.3 (7), AppIcon, Shortcut metadata, {count} signed arm64 binary(s), no direct connector/XCTest/profile.')
 
 if __name__ == '__main__':
     verify(sys.argv[1])

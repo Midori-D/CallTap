@@ -135,10 +135,18 @@ private final class CallTapRawAXGate: @unchecked Sendable {
 
 @MainActor
 final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDelegate {
+    static let shared = CallTapRawAXMonitor()
     @Published private(set) var isEnabled: Bool
     @Published private(set) var isRunning = false
     @Published private(set) var isPreparing = false
     @Published private(set) var status = "자동 시작이 꺼져 있습니다."
+    @Published private(set) var recentEvents: [String] = []
+
+    var diagnosticSummary: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        return (["AirRecord \(version)", "자동 시작 설정: \(isEnabled ? "켜짐" : "꺼짐")",
+                 "감시 상태: \(isRunning ? "실행 중" : "대기/중지")"] + recentEvents).joined(separator: "\n")
+    }
 
     private let observer = CXCallObserver()
     private let gate = CallTapRawAXGate()
@@ -146,6 +154,8 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     private var workerIsRunning = false
     private var backgroundTask = UIBackgroundTaskIdentifier.invalid
     private var preparationID = UUID()
+    private var shortcutPreparation: Task<Bool, Never>?
+    private var shortcutPreparationID: UUID?
     private let defaults: UserDefaults
     private static let enabledKey = "CallTap.RawAX.autoStartEnabled"
 
@@ -157,6 +167,9 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     }
 
     func start() async {
+        if shortcutPreparation != nil {
+            pause(message: "앱에서 통화 감시 준비를 다시 시작합니다.")
+        }
         isEnabled = true
         defaults.set(true, forKey: Self.enabledKey)
         await prepare()
@@ -167,7 +180,51 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         await prepare()
     }
 
-    private func prepare() async {
+    /// A user-configured Shortcut may rearm this process without switching
+    /// away from Phone. It does not turn a saved OFF preference back on.
+    func resumeFromShortcut() async -> Bool {
+        guard isEnabled, !Task.isCancelled else {
+            if !isEnabled { setStatus("앱에서 자동 시작을 먼저 켜 주세요.") }
+            return false
+        }
+        let request: UUID
+        let preparation: Task<Bool, Never>
+        if let existing = shortcutPreparation, let id = shortcutPreparationID {
+            request = id
+            preparation = existing
+        } else {
+            request = UUID()
+            let task = Task { @MainActor in
+                guard self.isEnabled, !Task.isCancelled else { return false }
+                // Refresh even a running lease: it may be about to expire.
+                // The same gate/policy retains all prior one-shot reservations.
+                self.pause(message: "단축어에서 VPN 연결과 통화 감시를 다시 준비합니다.", preservingShortcutPreparation: true)
+                await self.prepare(retryTunnelFor: 8)
+                return self.isEnabled && self.isRunning && !Task.isCancelled
+            }
+            shortcutPreparationID = request
+            shortcutPreparation = task
+            preparation = task
+        }
+        let ready = await withTaskCancellationHandler {
+            await preparation.value
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                guard let self, self.shortcutPreparationID == request else { return }
+                self.pause(message: "단축어의 감시 준비를 취소했습니다. 자동 시작 설정은 유지됩니다.")
+            }
+        }
+        if Task.isCancelled, shortcutPreparationID == request {
+            pause(message: "단축어의 감시 준비를 취소했습니다. 자동 시작 설정은 유지됩니다.")
+        }
+        if shortcutPreparationID == request {
+            shortcutPreparation = nil
+            shortcutPreparationID = nil
+        }
+        return ready && isEnabled && isRunning && !Task.isCancelled
+    }
+
+    private func prepare(retryTunnelFor: TimeInterval = 8) async {
         guard isEnabled, !isRunning, !isPreparing else { return }
         isPreparing = true
         let request = UUID()
@@ -179,13 +236,26 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
             return
         }
 
-        let probe = await LocalDevVPN.probeTunnel()
+        let deadline = ProcessInfo.processInfo.systemUptime + max(0, retryTunnelFor)
+        var probe: LocalDevVPN.TunnelProbe
+        repeat {
+            guard preparationID == request, isPreparing, isEnabled, !Task.isCancelled else { return }
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            let timeout = retryTunnelFor > 0 ? min(1.5, max(0.1, remaining)) : 1.5
+            probe = await LocalDevVPN.probeTunnel(timeout: timeout)
+            guard preparationID == request, isPreparing else { return }
+            if probe == .reachable || probe == .localNetworkDenied { break }
+            if retryTunnelFor <= 0 || ProcessInfo.processInfo.systemUptime >= deadline { break }
+            do { try await Task.sleep(nanoseconds: 250_000_000) }
+            catch { break }
+        } while true
         guard preparationID == request, isPreparing else { return }
+        guard isEnabled, !Task.isCancelled else { isPreparing = false; return }
         switch probe {
         case .reachable: break
         case .localNetworkDenied:
             isPreparing = false
-            setStatus("설정에서 CallTap의 로컬 네트워크 접근을 허용하세요.")
+            setStatus("설정에서 AirRecord의 로컬 네트워크 접근을 허용하세요.")
             return
         case .unreachable:
             isPreparing = false
@@ -214,11 +284,6 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         isPreparing = false
         isRunning = true
         setStatus("통화 연결을 기다립니다. 백그라운드 허용 시간 안에서 동작합니다.")
-        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.evaluate() }
-        }
-        self.timer = timer
-        RunLoop.main.add(timer, forMode: .common)
         evaluate()
     }
 
@@ -228,7 +293,15 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         pause(message: "자동 시작을 껐습니다. 이미 시작된 기본 녹음은 통화 화면에서 중지할 수 있습니다.")
     }
 
-    private func pause(message: String) {
+    private func pause(message: String, preservingShortcutPreparation: Bool = false) {
+        if !preservingShortcutPreparation {
+            // Revoke the ID before cancellation: an old cancellation handler
+            // must never match and pause a later manual or foreground run.
+            let previous = shortcutPreparation
+            shortcutPreparation = nil
+            shortcutPreparationID = nil
+            previous?.cancel()
+        }
         preparationID = UUID()
         gate.stop() // Invalidates worker callbacks before touching UI/task state.
         isRunning = false
@@ -261,6 +334,11 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
         updateCalls()
         guard !workerIsRunning else { return }
         let (decision, inspection) = gate.decision()
+        if case .inspect = decision {
+            setInspectionPolling(true)
+        } else {
+            setInspectionPolling(false)
+        }
         switch decision {
         case .inspect:
             guard let inspection else { return }
@@ -281,6 +359,20 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
             setStatus("통화 연결을 기다립니다. 백그라운드 허용 시간 안에서 동작합니다.")
         default: break
         }
+    }
+
+    private func setInspectionPolling(_ enabled: Bool) {
+        guard enabled else {
+            timer?.invalidate()
+            timer = nil
+            return
+        }
+        guard timer == nil else { return }
+        let timer = Timer(timeInterval: 0.8, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.evaluate() }
+        }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     private func inspect(_ inspection: CallTapRawAXGate.Inspection) {
@@ -340,7 +432,10 @@ final class CallTapRawAXMonitor: NSObject, ObservableObject, CXCallObserverDeleg
     private func setStatus(_ value: String) {
         guard status != value else { return }
         status = value
-        ictrlLog("CallTap RawAX 1.1: \(value)")
+        let time = Date().formatted(date: .omitted, time: .standard)
+        recentEvents.append("[\(time)] \(value)")
+        if recentEvents.count > 12 { recentEvents.removeFirst(recentEvents.count - 12) }
+        ictrlLog("AirRecord: \(value)")
     }
 }
 #endif
