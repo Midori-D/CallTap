@@ -35,8 +35,27 @@ jobs:
           brew list xcodegen >/dev/null 2>&1 || brew install xcodegen
           cargo --version
           rustup --version
+      - name: Restore compiled Rust dependencies
+        id: rawax-cache
+        uses: actions/cache/restore@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            build/cargo-rawax
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rawax-${{ runner.os }}-${{ runner.arch }}-d32c8189-${{ hashFiles('RawAX/*.rs') }}
+          restore-keys: rawax-${{ runner.os }}-${{ runner.arch }}-d32c8189-
       - name: Test protocol and build normal app
         run: bash Scripts/build-calltap-rawax.sh
+      - name: Save compiled Rust dependencies
+        if: always() && !cancelled() && steps.rawax-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@caa296126883cff596d87d8935842f9db880ef25
+        with:
+          path: |
+            build/cargo-rawax
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ steps.rawax-cache.outputs.cache-primary-key }}
       - name: Upload CallTap AX
         uses: actions/upload-artifact@v7
         with:

@@ -21,7 +21,7 @@ fn field<'a>(value: &'a Value, key: &str) -> Result<&'a Value, IdeviceError> { d
 fn number(value: &Value) -> Option<u64> { value.as_unsigned_integer().or_else(|| value.as_signed_integer().and_then(|v| u64::try_from(v).ok())) }
 fn yes(value: Option<&Value>) -> bool { matches!(value, Some(Value::Boolean(true))) || value.and_then(number) == Some(1) }
 fn nil() -> Value { Value::String("$null".into()) }
-fn map(entries: Vec<(&str, Value)>) -> Value { Value::Dictionary(entries.into_iter().map(|(k,v)| (k.into(),v)).collect()) }
+fn map(entries: Vec<(&str, Value)>) -> Value { Value::Dictionary(entries.into_iter().map(|(k,v)| (k.to_owned(),v)).collect()) }
 fn key(token: &Token) -> Result<(u64,u64), IdeviceError> {
     let pid = number(field(token,"pid")?).ok_or_else(|| err("invalid process identity"))?;
     let id = number(field(token,"objectID")?).ok_or_else(|| err("invalid element identity"))?;
@@ -67,7 +67,7 @@ fn decode(data: &[u8]) -> Result<Value, IdeviceError> {
                     let values: Vec<f64> = rect.split(|c:char| c=='{' || c=='}' || c==',' || c.is_whitespace()).filter(|s|!s.is_empty()).map(str::parse).collect::<Result<_,_>>().map_err(|_|err("invalid rectangle"))?;
                     if values.len()!=4 { return Err(err("invalid rectangle")); }
                     if !values.iter().all(|n|n.is_finite()) { return Ok(map(vec![("unavailable",Value::String("CGRectNull".into()))])); }
-                    return Ok(Value::Dictionary(["x","y","width","height"].into_iter().zip(values).map(|(k,v)|(k.into(),Value::Real(v))).collect()));
+                    return Ok(Value::Dictionary(["x","y","width","height"].into_iter().zip(values).map(|(k,v)|(k.to_owned(),Value::Real(v))).collect()));
                 }
                 Ok(Value::Dictionary(decoded))
             }
@@ -170,7 +170,8 @@ impl Ax {
                 let data=self.received.recv().await.ok_or_else(||err("AX callback closed"))?;
                 let response=decode(&data)?;
                 if dict(&response)?.get("associatedRequestType").and_then(number)!=Some(kind) {continue;}
-                if dict(&response)?.get("error").and_then(number).unwrap_or(0)!=0 {return Err(err("AX request refused"));}
+                let status=dict(&response)?.get("error").and_then(number);
+                if (kind==7 && status!=Some(0)) || status.unwrap_or(0)!=0 {return Err(err("AX request refused or action status unavailable"));}
                 if kind==2 && (dict(&response)?.get("attribute").and_then(number)!=Some(52) || key(field(&response,"associatedTranslationObject")?)?!=key(token.ok_or_else(||err("missing snapshot token"))?)?) {return Err(err("snapshot identity mismatch"));}
                 return Ok(dict(&response)?.get("resultData").cloned().unwrap_or_else(nil));
             }
