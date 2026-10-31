@@ -43,7 +43,7 @@ struct CallTapMainView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .navigationTitle("CallTap 1.1")
+        .navigationTitle("CallTap 1.1.1")
         .sheet(isPresented: $showMount) { DDIMountView() }
     }
     #else

@@ -13,6 +13,8 @@ const CHILDREN: &str = "UIAccessibilitySnapshotKeyChildren";
 const ATTRS: &str = "UIAccessibilitySnapshotKeyAttributes";
 const CHILD_COUNT: &str = "UIAccessibilitySnapshotKeyChildrenCount";
 const LIMIT: usize = 20 * 1024 * 1024;
+const TRAIT_BUTTON: u64 = 1;
+const TRAIT_SELECTED: u64 = 8;
 type Token = Value;
 
 fn err(message: &str) -> IdeviceError { IdeviceError::UnexpectedResponse(format!("CallTap AX: {message}")) }
@@ -171,6 +173,7 @@ impl Ax {
                 let response=decode(&data)?;
                 if dict(&response)?.get("associatedRequestType").and_then(number)!=Some(kind) {continue;}
                 let status=dict(&response)?.get("error").and_then(number);
+                if kind==6 && status==Some(8) {return Err(err("hit-test unavailable (8)"));}
                 if (kind==7 && status!=Some(0)) || status.unwrap_or(0)!=0 {return Err(err("AX request refused or action status unavailable"));}
                 if kind==2 && (dict(&response)?.get("attribute").and_then(number)!=Some(52) || key(field(&response,"associatedTranslationObject")?)?!=key(token.ok_or_else(||err("missing snapshot token"))?)?) {return Err(err("snapshot identity mismatch"));}
                 return Ok(dict(&response)?.get("resultData").cloned().unwrap_or_else(nil));
@@ -226,7 +229,24 @@ fn more(label:&str)->bool{matches!(norm(label).as_str(),"더 보기"|"더보기"
 fn stop(label:&str)->bool{matches!(norm(label).as_str(),"통화 녹음 중지"|"통화 녹음 종료"|"통화 녹음 중단"|"녹음 중지"|"녹음 종료"|"녹음 중단"|"녹음 중"|"통화 녹음 중"|"stop recording"|"stop call recording"|"end recording"|"recording"|"recording in progress")}
 fn inactive(value:Option<&Value>)->bool {match value {None=>true,Some(Value::String(s))=>matches!(s.trim().to_lowercase().as_str(),""|"0"|"off"|"$null"),Some(Value::Boolean(false))=>true,Some(v)=>number(v)==Some(0)}}
 fn active(value:Option<&Value>)->bool {match value {Some(Value::Boolean(true))=>true,Some(Value::String(s))=>matches!(norm(s).as_str(),"1"|"on"|"selected"|"recording"|"녹음 중"|"켜짐"|"선택됨"),Some(v)=>number(v)==Some(1),None=>false}}
-fn recording(nodes:&[Node])->bool {nodes.iter().any(|n|n.visible&&(stop(&n.label)||(start(&n.label)&&((n.traits&4)!=0||active(n.value.as_ref())))))}
+fn recording(nodes:&[Node])->bool {nodes.iter().any(|n|n.visible&&(stop(&n.label)||(start(&n.label)&&((n.traits&TRAIT_SELECTED)!=0||active(n.value.as_ref())))))}
+#[derive(Clone,Copy)]
+enum HitEvidence { SameElement, DifferentElement, Unavailable8 }
+impl HitEvidence {
+    fn permits(self,traits:u64)->bool {
+        match self {
+            Self::SameElement=>true,
+            Self::DifferentElement=>false,
+            // Proximity-blanked iOS 27 screens return error 8 even though the
+            // native call button remains enabled/visible in AX. A controlled
+            // device test confirmed native activation without waking display.
+            Self::Unavailable8=>(traits&TRAIT_BUTTON)!=0,
+        }
+    }
+}
+fn unavailable_hit(error:&IdeviceError)->bool {
+    matches!(error,IdeviceError::UnexpectedResponse(message) if message=="CallTap AX: hit-test unavailable (8)")
+}
 fn unique(nodes:&[Node],predicate:fn(&str)->bool)->Result<Option<Node>,IdeviceError> {
     let mut candidates=HashMap::new();
     for n in nodes.iter().filter(|n|n.visible&&predicate(&n.label)) {candidates.insert(key(&n.token)?,n.clone());}
@@ -277,9 +297,16 @@ pub async fn inspect(provider:&mut impl RsdProvider,hs:&mut RsdHandshake,may_ope
         let frame=confirmed.frame.ok_or_else(||err("target frame unavailable"))?;
         let live_frame=live.get("21").and_then(Rect::parse).ok_or_else(||err("live target frame unavailable"))?;
         if !frame.same(live_frame){return Ok(0);}
-        if key(&ax.hit(frame.center()).await?)?!=key(&confirmed.token)? {return Ok(0);}
-        // The exact target hit above proves that this native call control is
-        // currently exposed. The point is never used as an input coordinate.
+        let hit=match ax.hit(frame.center()).await {
+            Ok(token)=>if key(&token)?==key(&confirmed.token)? {HitEvidence::SameElement}else{HitEvidence::DifferentElement},
+            Err(error) if unavailable_hit(&error)=>HitEvidence::Unavailable8,
+            Err(error)=>return Err(error),
+        };
+        if !hit.permits(confirmed.traits){return Ok(0);}
+        // Even the error-8 path still requires the same unique native button
+        // in two snapshots, matching live frame, enabled/visible/inactive state,
+        // and the unlocked single-call/generation gate immediately before press.
+        // No coordinate is ever sent as an input event.
         let latest=ax.read(1,Some(map(vec![("pid",Value::Integer(pid.into()))])),None,0).await?;
         if key(&latest)?!=key(&root)?||!guard(0){return Ok(0);}
         let action=if is_start {2}else{1};
@@ -300,7 +327,11 @@ mod tests {
     #[test] fn distinct_visible_candidates_are_ambiguous(){assert!(unique(&[node(1,true),node(2,true)],start).unwrap().is_none());}
     #[test] fn repeated_native_handle_is_one_target(){assert!(unique(&[node(1,true),node(1,true)],start).unwrap().is_some());}
     #[test] fn request_roundtrip_preserves_large_token(){let t=token(42,u64::MAX-1);let encoded=request(1,Some(map(vec![("pid",Value::Integer(42.into()))])),Some(&t),0).unwrap();let decoded=decode(&encoded).unwrap();assert_eq!(key(field(&decoded,"translation").unwrap()).unwrap(),(42,u64::MAX-1));}
-    #[test] fn selected_recording_is_never_a_start(){let mut n=node(1,true);n.traits|=4;assert!(recording(&[n]));}
+    #[test] fn selected_recording_is_never_a_start(){let mut n=node(1,true);n.traits|=TRAIT_SELECTED;assert!(recording(&[n]));}
+    #[test] fn image_trait_does_not_mean_selected(){let mut n=node(1,true);n.traits|=4;assert!(!recording(&[n]));}
+    #[test] fn proximity_error8_allows_known_button_traits(){assert!(HitEvidence::Unavailable8.permits(8589934593));assert!(HitEvidence::Unavailable8.permits(8589934657));}
+    #[test] fn error8_does_not_allow_a_text_or_unknown_target(){assert!(!HitEvidence::Unavailable8.permits(64));assert!(!HitEvidence::Unavailable8.permits(0));}
+    #[test] fn wrong_hit_and_other_errors_never_use_fallback(){assert!(!HitEvidence::DifferentElement.permits(TRAIT_BUTTON));assert!(!unavailable_hit(&err("AX request timed out")));assert!(unavailable_hit(&err("hit-test unavailable (8)")));}
     #[test] fn unknown_value_is_not_inactive(){assert!(!inactive(Some(&Value::String("unknown".into()))));}
     #[test] fn unknown_value_does_not_claim_recording(){let mut n=node(1,true);n.value=Some(Value::String("unknown".into()));assert!(!recording(&[n]));}
     #[test] fn independent_python_request_matches(){let expected=decode(include_bytes!("calltap_ax_fixtures/application-request.bplist")).unwrap();let actual=decode(&request(1,Some(map(vec![("pid",Value::Integer(42.into()))])),None,0).unwrap()).unwrap();assert_eq!(actual,expected);}
